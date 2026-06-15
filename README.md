@@ -21,7 +21,8 @@
 ### HmiApp 架构（MVVM）
 - `ViewModels/MainViewModel.cs`：连接/轮询/报文/趋势/写入调度，绑定驱动界面（几乎零 code-behind）。
 - `ViewModels/PointVm.cs`：单个监测点（值变化自动通知 UI）。
-- `Views/`：`OverviewView`(总览大屏) `ThreeMachineView` `TransportView` `PowerFluidView` `FrameView`(报文) `WriteView`(写入调度)。
+- `Views/`：`OverviewView`(总览) `DeviceControlView`(设备控制台) `ThreeMachineView` `TransportView` `PowerFluidView` `PlcControlView`(PLC) `FrameView`(报文) `WriteView`(写入调度)。
+- `ViewModels/DeviceControlVm.cs`：单台设备控制卡（启停/设定值/动作按钮），写操作经 SlaveSim 连接下发。
 - `Themes/DarkTheme.xaml`：深蓝/青 工业 SCADA 配色，App.xaml 全局合并。
 - 图表：LiveCharts2（趋势折线 + 组合开关回路电流柱状 + 支架群压力柱状）。
 
@@ -35,9 +36,11 @@ dotnet run --project HmiApp
 ```
 或在 VS2026：打开 `MiningHmiDemo.sln`，分别把 `SlaveSim`、`HmiApp` 设为启动项运行（可设多启动项）。
 
-## 操作（顶部连接栏 + 6 个 tab）
+## 操作（顶部连接栏 + 8 个 tab）
 1. 顶部点「连接」（默认 127.0.0.1:1502）→ 各 tab 每 800ms 刷新；顶部 KPI 显示 设备/运行/报警 数。
 2. **总览大屏**：KPI 卡 + 实时趋势（可选监测点）+ 实时报警列表。
+3. **设备控制**（工业 HMI 风格控制台）：每台设备一张卡——运行指示灯 + 关键读数 + **启动/停止开关**、**设定值滑块+输入框+下发**、液压支架的**升柱/降柱/移架**、组合开关的**合闸/分闸**、支架群压力**一键 FC16 群写**。直观控制，不用手填寄存器。
+4. **PLC 控制**：独立连 OpenPLC(:502)，演示乳化泵启停联锁（PLC 否决上位机指令）。
 3. **综采三机 / 运输系统 / 供液·供电**：分系统设备表（报警行红底）；供液供电页含「组合开关回路电流」「支架群压力」柱状图。
 4. **收发报文**（核心）：每次读/写出现"发→/←收"两帧，点某帧 → 右侧「逐字段解码」显示 MBAP+PDU 每字节含义；写操作高亮、可只看写/暂停/清空。
 5. **写入/调度**（题目二.3）：

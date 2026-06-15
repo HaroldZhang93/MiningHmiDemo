@@ -86,6 +86,10 @@ public partial class MainViewModel : ObservableObject
     // PLC 控制 tab 的子 ViewModel（独立连接 OpenPLC）
     public PlcViewModel Plc { get; } = new();
 
+    // 设备控制卡（工业 HMI 风格：开关/滑块/动作按钮）
+    public ObservableCollection<DeviceControlVm> Controls { get; } = new();
+    [ObservableProperty] private string _ctrlHint = "";
+
     public MainViewModel()
     {
         foreach (var p in RegisterMap.Points)
@@ -129,9 +133,72 @@ public partial class MainViewModel : ObservableObject
         SupportXAxes = new[] { new Axis { Labels = Enumerable.Range(1, _supportPts.Count).Select(i => $"{i}#").ToArray(), LabelsPaint = subPaint } };
 
         _poll.Tick += OnPoll;
+        BuildControls();
     }
 
     private PointVm? Find(string d, string n) => _all.FirstOrDefault(v => v.Device == d && v.Name == n);
+
+    // ===================== 设备控制卡 =====================
+    public void CtrlCoil(ushort a, bool on) => CtrlDo(() => _master!.WriteSingleCoil(a, on), $"线圈{a}={(on ? "ON" : "OFF")}");
+    public void CtrlReg(ushort a, ushort v) => CtrlDo(() => _master!.WriteSingleRegister(a, v), $"寄存器{a}={v}");
+    public void CtrlMulti(ushort a, ushort[] v) => CtrlDo(() => _master!.WriteMultipleRegisters(a, v), $"多寄存器@{a}×{v.Length}");
+
+    private void CtrlDo(Action act, string label)
+    {
+        if (_master == null) { CtrlHint = "未连接（请先在顶部连接 SlaveSim）"; return; }
+        try { act(); CtrlHint = "已下发：" + label; }
+        catch (Exception ex) { CtrlHint = "下发失败：" + ex.Message; }
+    }
+
+    private void BuildControls()
+    {
+        List<PointVm> Rd(params (string d, string n)[] xs)
+            => xs.Select(x => Find(x.d, x.n)).Where(p => p != null).Cast<PointVm>().ToList();
+
+        Controls.Add(new DeviceControlVm(this) { Device = "采煤机", RunPoint = Find("采煤机", "运行中"),
+            Readings = Rd(("采煤机", "左截割电机电流"), ("采煤机", "牵引速度"), ("采煤机", "牵引电机温度")),
+            HasStartStop = true, StartCoil = 0, HasSetpoint = true, SetpointLabel = "牵引速度设定 (m/min)", SpMin = 0, SpMax = 12, SpAddr = 0, SpScale = 0.1, Setpoint = 6 });
+
+        Controls.Add(new DeviceControlVm(this) { Device = "刮板输送机", RunPoint = Find("刮板输送机", "运行中"),
+            Readings = Rd(("刮板输送机", "电机电流"), ("刮板输送机", "链速"), ("刮板输送机", "链张力")),
+            HasStartStop = true, StartCoil = 20, HasSetpoint = true, SetpointLabel = "链速设定 (m/s)", SpMin = 0, SpMax = 2.5, SpAddr = 20, SpScale = 0.01, Setpoint = 1.2 });
+
+        Controls.Add(new DeviceControlVm(this) { Device = "转载机", RunPoint = Find("转载机", "运行中"),
+            Readings = Rd(("转载机", "电机电流"), ("转载机", "电机温度")), HasStartStop = true, StartCoil = 30 });
+
+        Controls.Add(new DeviceControlVm(this) { Device = "破碎机", RunPoint = Find("破碎机", "运行中"),
+            Readings = Rd(("破碎机", "电机电流"), ("破碎机", "振动")), HasStartStop = true, StartCoil = 40 });
+
+        Controls.Add(new DeviceControlVm(this) { Device = "皮带输送机", RunPoint = Find("皮带输送机", "运行中"),
+            Readings = Rd(("皮带输送机", "带速"), ("皮带输送机", "张力")), HasStartStop = true, StartCoil = 50 });
+
+        Controls.Add(new DeviceControlVm(this) { Device = "乳化泵站", RunPoint = Find("乳化泵站", "运行中"),
+            Readings = Rd(("乳化泵站", "出口压力"), ("乳化泵站", "液箱液位")),
+            HasStartStop = true, StartCoil = 60, HasSetpoint = true, SetpointLabel = "出口压力设定 (MPa)", SpMin = 0, SpMax = 40, SpAddr = 60, SpScale = 0.1, Setpoint = 32 });
+
+        Controls.Add(new DeviceControlVm(this) { Device = "喷雾泵站", RunPoint = Find("喷雾泵站", "运行中"),
+            Readings = Rd(("喷雾泵站", "出口压力"), ("喷雾泵站", "流量")),
+            HasStartStop = true, StartCoil = 70, HasSetpoint = true, SetpointLabel = "出口压力设定 (MPa)", SpMin = 0, SpMax = 16, SpAddr = 70, SpScale = 0.1, Setpoint = 8 });
+
+        Controls.Add(new DeviceControlVm(this) { Device = "液压支架", RunPoint = Find("液压支架", "护帮板伸出"),
+            Readings = Rd(("液压支架", "前柱压力"), ("液压支架", "后柱压力"), ("液压支架", "推移行程")),
+            Actions = new[] {
+                new DeviceActionVm("升柱", () => CtrlCoil(10, true)),
+                new DeviceActionVm("降柱", () => CtrlCoil(10, false)),
+                new DeviceActionVm("移架", () => CtrlCoil(12, true)),
+            } });
+
+        Controls.Add(new DeviceControlVm(this) { Device = "液压支架群·压力设定",
+            Readings = Rd(("液压支架群", "1#立柱压力设定"), ("液压支架群", "8#立柱压力设定")),
+            HasSetpoint = true, SetpointLabel = "全部立柱压力设定 (MPa·FC16群写)", SpMin = 0, SpMax = 40, SpAddr = RegisterMap.SupportGroupStart, SpScale = 0.1, SpMulti = true, Setpoint = 30 });
+
+        for (int i = 0; i < 4; i++)
+        {
+            ushort cc = (ushort)(90 + i);
+            Controls.Add(new DeviceControlVm(this) { Device = $"组合开关·回路{i + 1}", RunPoint = Find("组合开关", $"回路{i + 1}通断"),
+                Readings = Rd(("组合开关", $"回路{i + 1}电流")), HasStartStop = true, StartCoil = cc, StartLabel = "合闸", StopLabel = "分闸" });
+        }
+    }
 
     // ===================== 连接 =====================
     [RelayCommand]

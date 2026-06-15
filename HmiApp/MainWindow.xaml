@@ -51,6 +51,7 @@
         <!-- 多 tab -->
         <TabControl>
             <TabItem Header="总览大屏"><views:OverviewView/></TabItem>
+            <TabItem Header="设备控制"><views:DeviceControlView/></TabItem>
             <TabItem Header="综采三机"><views:ThreeMachineView/></TabItem>
             <TabItem Header="运输系统"><views:TransportView/></TabItem>
             <TabItem Header="供液 / 供电"><views:PowerFluidView/></TabItem>
