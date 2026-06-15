@@ -1,0 +1,43 @@
+<Window x:Class="HmiApp.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="综采设备 Modbus 监控上位机 (MVP)" Height="600" Width="920"
+        FontFamily="Microsoft YaHei" FontSize="13">
+    <!-- DockPanel：顶部连接栏、底部写入面板、中间监测表 -->
+    <DockPanel Margin="10">
+
+        <!-- 顶部：连接栏 -->
+        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+            <TextBlock Text="IP：" VerticalAlignment="Center"/>
+            <TextBox x:Name="txtIp" Text="127.0.0.1" Width="120" VerticalAlignment="Center"/>
+            <TextBlock Text="端口：" VerticalAlignment="Center" Margin="10,0,0,0"/>
+            <TextBox x:Name="txtPort" Text="1502" Width="60" VerticalAlignment="Center"/>
+            <Button x:Name="btnConnect" Content="连接" Width="80" Margin="10,0,0,0" Click="OnConnectClick"/>
+            <TextBlock x:Name="txtStatus" Text="未连接" Foreground="Gray" VerticalAlignment="Center" Margin="14,0,0,0"/>
+        </StackPanel>
+
+        <!-- 底部：写入面板（题目二.2 数据写入） -->
+        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,8,0,0">
+            <TextBlock Text="写入点位：" VerticalAlignment="Center"/>
+            <ComboBox x:Name="cboWrite" Width="280" VerticalAlignment="Center" DisplayMemberPath="WriteLabel"/>
+            <TextBlock Text="值：" VerticalAlignment="Center" Margin="10,0,0,0"/>
+            <TextBox x:Name="txtWriteVal" Width="90" VerticalAlignment="Center"/>
+            <Button x:Name="btnWrite" Content="写入" Width="80" Margin="10,0,0,0" Click="OnWriteClick" IsEnabled="False"/>
+            <TextBlock Text="（线圈填 0/1；保持寄存器填寄存器整数值）" Foreground="Gray" VerticalAlignment="Center" Margin="14,0,0,0"/>
+        </StackPanel>
+
+        <!-- 中间：实时监测表（题目二.1 / 二.4） -->
+        <DataGrid x:Name="grid" AutoGenerateColumns="False" IsReadOnly="True"
+                  CanUserAddRows="False" HeadersVisibility="Column"
+                  GridLinesVisibility="All" RowHeaderWidth="0">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="设备"   Binding="{Binding Device}"      Width="100"/>
+                <DataGridTextColumn Header="点位"   Binding="{Binding Name}"        Width="170"/>
+                <DataGridTextColumn Header="数据区" Binding="{Binding AreaText}"    Width="160"/>
+                <DataGridTextColumn Header="地址"   Binding="{Binding AddressText}" Width="70"/>
+                <DataGridTextColumn Header="数值"   Binding="{Binding Value}"       Width="120"/>
+                <DataGridTextColumn Header="单位"   Binding="{Binding Unit}"        Width="80"/>
+            </DataGrid.Columns>
+        </DataGrid>
+    </DockPanel>
+</Window>
