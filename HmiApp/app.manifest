@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <!-- 让程序对每个显示器各自的 DPI 缩放生效(Per-Monitor V2)。
+       这样在 2K@200% 笔记本屏和 1080p@100% 副屏之间拖动时，WPF 会按各屏 DPI
+       重新清晰渲染，而不是位图拉伸/溢出。 -->
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/PM</dpiAware>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2, PerMonitor</dpiAwareness>
+    </windowsSettings>
+  </application>
+</assembly>

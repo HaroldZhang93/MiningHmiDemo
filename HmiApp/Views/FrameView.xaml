@@ -1,0 +1,50 @@
+<UserControl x:Class="HmiApp.Views.FrameView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Grid Margin="4">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="3*"/>
+            <ColumnDefinition Width="2*"/>
+        </Grid.ColumnDefinitions>
+
+        <!-- 左：报文列表 -->
+        <Border Grid.Column="0" Style="{StaticResource Card}">
+            <DockPanel>
+                <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,6">
+                    <TextBlock Text="收发报文" Style="{StaticResource H1}"/>
+                    <CheckBox Content="记录轮询读报文" IsChecked="{Binding LogPolling}" Margin="14,0,0,0"/>
+                    <ToggleButton Content="暂停" IsChecked="{Binding FramePaused}" Width="56" Margin="10,0,0,0"/>
+                    <Button Content="清空" Command="{Binding ClearFramesCommand}" Width="56" Margin="8,0,0,0"/>
+                </StackPanel>
+                <DataGrid ItemsSource="{Binding Frames}" SelectedItem="{Binding SelectedFrame}"
+                          FontFamily="Consolas" GridLinesVisibility="Horizontal">
+                    <DataGrid.RowStyle>
+                        <Style TargetType="DataGridRow">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsWrite}" Value="True">
+                                    <Setter Property="Background" Value="#3A2F12"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </DataGrid.RowStyle>
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="时间" Binding="{Binding TimeText}" Width="100"/>
+                        <DataGridTextColumn Header="方向" Binding="{Binding DirText}" Width="48"/>
+                        <DataGridTextColumn Header="摘要" Binding="{Binding Summary}" Width="*"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </DockPanel>
+        </Border>
+
+        <!-- 右：选中帧逐字段解码 -->
+        <Border Grid.Column="1" Style="{StaticResource Card}">
+            <DockPanel>
+                <TextBlock DockPanel.Dock="Top" Text="选中帧 · 逐字段解码 (MBAP + PDU)" Style="{StaticResource H1}" Margin="0,0,0,6"/>
+                <TextBox Text="{Binding SelectedFrameDetail, Mode=OneWay}" IsReadOnly="True"
+                         FontFamily="Consolas" FontSize="12.5" TextWrapping="NoWrap"
+                         VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+                         Background="#0A1626" Foreground="#CFE3F5" Padding="8"/>
+            </DockPanel>
+        </Border>
+    </Grid>
+</UserControl>

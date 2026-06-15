@@ -1,0 +1,79 @@
+<UserControl x:Class="HmiApp.Views.PowerFluidView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:lvc="clr-namespace:LiveChartsCore.SkiaSharpView.WPF;assembly=LiveChartsCore.SkiaSharpView.WPF">
+    <Grid Margin="4">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+
+        <!-- 左：供液 + 供电 表 -->
+        <Grid Grid.Column="0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+            <Border Grid.Row="0" Style="{StaticResource Card}">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="供液系统：乳化泵站 · 喷雾泵站" Style="{StaticResource H1}" Margin="0,0,0,6"/>
+                    <DataGrid ItemsSource="{Binding Fluid}">
+                        <DataGrid.RowStyle>
+                            <Style TargetType="DataGridRow">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsAlarm}" Value="True"><Setter Property="Background" Value="#5A1F1F"/></DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </DataGrid.RowStyle>
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="设备" Binding="{Binding Device}" Width="100"/>
+                            <DataGridTextColumn Header="点位" Binding="{Binding Name}" Width="*"/>
+                            <DataGridTextColumn Header="数值" Binding="{Binding Value}" Width="80"/>
+                            <DataGridTextColumn Header="单位" Binding="{Binding Unit}" Width="70"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
+            </Border>
+            <Border Grid.Row="1" Style="{StaticResource Card}">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="供电系统：移变 · 组合开关" Style="{StaticResource H1}" Margin="0,0,0,6"/>
+                    <DataGrid ItemsSource="{Binding Power}">
+                        <DataGrid.RowStyle>
+                            <Style TargetType="DataGridRow">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsAlarm}" Value="True"><Setter Property="Background" Value="#5A1F1F"/></DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </DataGrid.RowStyle>
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="设备" Binding="{Binding Device}" Width="100"/>
+                            <DataGridTextColumn Header="点位" Binding="{Binding Name}" Width="*"/>
+                            <DataGridTextColumn Header="数值" Binding="{Binding Value}" Width="80"/>
+                            <DataGridTextColumn Header="单位" Binding="{Binding Unit}" Width="70"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
+            </Border>
+        </Grid>
+
+        <!-- 右：两个柱状图 -->
+        <Grid Grid.Column="1">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+            <Border Grid.Row="0" Style="{StaticResource Card}">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="组合开关 各回路电流 (A)" Style="{StaticResource H1}" Margin="0,0,0,6"/>
+                    <lvc:CartesianChart Series="{Binding LoopSeries}" XAxes="{Binding LoopXAxes}"/>
+                </DockPanel>
+            </Border>
+            <Border Grid.Row="1" Style="{StaticResource Card}">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="液压支架群 1#~8# 立柱压力设定 (MPa)" Style="{StaticResource H1}" Margin="0,0,0,6"/>
+                    <lvc:CartesianChart Series="{Binding SupportSeries}" XAxes="{Binding SupportXAxes}"/>
+                </DockPanel>
+            </Border>
+        </Grid>
+    </Grid>
+</UserControl>
