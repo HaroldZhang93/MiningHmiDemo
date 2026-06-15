@@ -48,7 +48,17 @@ public class RegPoint
 public static class RegisterMap
 {
     public const byte SlaveId = 1;     // 从站地址（Modbus 单元标识）
-    public const int  Port    = 1502;  // 调试端口（标准是 502，但 <1024 在 Windows 需管理员权限，调试改用 1502）
+    public const int  Port    = 1502;  // 综采三机区端口（也是默认/探针用端口）
+
+    // 多从站分区：每个区一个 Modbus 从站端口（模拟井下多控制器拓扑）
+    public static int PortOf(Category c) => c switch
+    {
+        Category.ThreeMachine => 1502,
+        Category.Transport    => 1503,
+        Category.Fluid        => 1504,
+        Category.Power        => 1505,
+        _ => 1502,
+    };
 
     // 连续保持寄存器测试块：支架群 1#~8# 立柱压力设定（一段连续 HR，专供 FC16 多寄存器写）
     public const ushort SupportGroupStart = 200;

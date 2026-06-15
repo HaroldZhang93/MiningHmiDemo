@@ -1,0 +1,161 @@
+<UserControl x:Class="HmiApp.Views.DeviceInfoView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:HmiApp">
+    <UserControl.Resources>
+        <local:HexToBrushConverter x:Key="HexToBrush"/>
+        <local:InverseBoolToVisibilityConverter x:Key="InvBoolToVis"/>
+
+        <!-- 卡片标题：整行可点击、透明无按钮外观 -->
+        <Style x:Key="CardHeader" TargetType="ToggleButton">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Border Background="Transparent"><ContentPresenter/></Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- 详情里的小节标题 -->
+        <Style x:Key="Section" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource Cyan}"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="FontSize" Value="12.5"/>
+            <Setter Property="Margin" Value="0,8,0,2"/>
+        </Style>
+        <Style x:Key="Body" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource TextLight}"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+            <Setter Property="LineHeight" Value="18"/>
+        </Style>
+    </UserControl.Resources>
+
+    <DockPanel Margin="4">
+        <!-- 顶部说明栏 -->
+        <Border DockPanel.Dock="Top" Style="{StaticResource Card}" Margin="6,6,6,2">
+            <DockPanel>
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button Content="全部展开" Command="{Binding ExpandAllInfoCommand}" Width="84"/>
+                    <Button Content="全部收起" Command="{Binding CollapseAllInfoCommand}" Width="84"/>
+                </StackPanel>
+                <StackPanel>
+                    <TextBlock Text="综采工作面设备功能说明" Style="{StaticResource H1}"/>
+                    <TextBlock Text="业务学习（题目四）：各设备的作用 · 工作原理 · 关键日常监测量。点击任意卡片展开详情。"
+                               Foreground="{StaticResource SubText}" Margin="0,2,0,0"/>
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <ItemsControl ItemsSource="{Binding DeviceInfoGroups}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <StackPanel Margin="2,8,2,4">
+                            <!-- 分组标题 -->
+                            <StackPanel Orientation="Horizontal" Margin="6,0,0,2">
+                                <Rectangle Width="5" Height="18" RadiusX="2" RadiusY="2"
+                                           Fill="{Binding AccentHex, Converter={StaticResource HexToBrush}}" Margin="0,0,8,0"/>
+                                <TextBlock Text="{Binding Title}" Style="{StaticResource H1}" FontSize="16"/>
+                                <TextBlock Text="{Binding Subtitle}" Foreground="{StaticResource SubText}"
+                                           Margin="10,0,0,0" VerticalAlignment="Bottom"/>
+                            </StackPanel>
+
+                            <!-- 该组设备卡片（自动换行铺排）-->
+                            <ItemsControl ItemsSource="{Binding Devices}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Style="{StaticResource Card}" Width="372" VerticalAlignment="Top">
+                                            <StackPanel>
+                                                <!-- 标题行（点击展开）-->
+                                                <ToggleButton Style="{StaticResource CardHeader}" IsChecked="{Binding IsExpanded}">
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="Auto"/>
+                                                            <ColumnDefinition Width="*"/>
+                                                            <ColumnDefinition Width="Auto"/>
+                                                        </Grid.ColumnDefinitions>
+                                                        <Rectangle Grid.Column="0" Width="4" RadiusX="2" RadiusY="2"
+                                                                   Fill="{Binding AccentHex, Converter={StaticResource HexToBrush}}" Margin="0,2,10,2"/>
+                                                        <StackPanel Grid.Column="1">
+                                                            <TextBlock Text="{Binding Name}" Style="{StaticResource H1}"/>
+                                                            <TextBlock Text="{Binding En}" Foreground="{StaticResource SubText}" FontSize="11" TextWrapping="Wrap"/>
+                                                        </StackPanel>
+                                                        <Path Grid.Column="2" Data="M0,0 L7,5 L0,10 Z" Fill="{StaticResource SubText}"
+                                                              Width="7" Height="10" Stretch="Fill" VerticalAlignment="Center" Margin="8,0,2,0"
+                                                              RenderTransformOrigin="0.5,0.5">
+                                                            <Path.Style>
+                                                                <Style TargetType="Path">
+                                                                    <Setter Property="RenderTransform"><Setter.Value><RotateTransform Angle="0"/></Setter.Value></Setter>
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding IsExpanded}" Value="True">
+                                                                            <Setter Property="RenderTransform"><Setter.Value><RotateTransform Angle="90"/></Setter.Value></Setter>
+                                                                            <Setter Property="Fill" Value="{StaticResource Cyan}"/>
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </Path.Style>
+                                                        </Path>
+                                                    </Grid>
+                                                </ToggleButton>
+
+                                                <!-- 一句话定位（收起时也显示）-->
+                                                <TextBlock Text="{Binding Tagline}" Style="{StaticResource Body}"
+                                                           Foreground="{StaticResource SubText}" Margin="14,6,0,0"/>
+
+                                                <!-- 详情（展开后显示）-->
+                                                <StackPanel Margin="14,0,0,2"
+                                                            Visibility="{Binding IsExpanded, Converter={StaticResource BoolToVis}}">
+                                                    <TextBlock Text="作用" Style="{StaticResource Section}"/>
+                                                    <TextBlock Text="{Binding Role}" Style="{StaticResource Body}"/>
+
+                                                    <TextBlock Text="工作原理" Style="{StaticResource Section}"/>
+                                                    <TextBlock Text="{Binding Principle}" Style="{StaticResource Body}"/>
+
+                                                    <TextBlock Text="关键日常监测量" Style="{StaticResource Section}"/>
+                                                    <ItemsControl ItemsSource="{Binding KeyData}">
+                                                        <ItemsControl.ItemTemplate>
+                                                            <DataTemplate>
+                                                                <Border Background="{StaticResource Panel2}" CornerRadius="3" Padding="7,4" Margin="0,2">
+                                                                    <StackPanel>
+                                                                        <DockPanel>
+                                                                            <TextBlock DockPanel.Dock="Right" Text="{Binding Range}" Foreground="{StaticResource Cyan}"
+                                                                                       FontSize="11" Margin="8,0,0,0"/>
+                                                                            <TextBlock Text="{Binding Param}" Foreground="{StaticResource TextLight}"
+                                                                                       FontWeight="SemiBold" FontSize="12" TextTrimming="CharacterEllipsis"/>
+                                                                        </DockPanel>
+                                                                        <TextBlock Text="{Binding Why}" Foreground="{StaticResource SubText}"
+                                                                                   FontSize="11" TextWrapping="Wrap" Margin="0,1,0,0"/>
+                                                                    </StackPanel>
+                                                                </Border>
+                                                            </DataTemplate>
+                                                        </ItemsControl.ItemTemplate>
+                                                    </ItemsControl>
+
+                                                    <TextBlock Text="常见故障 / 报警" Style="{StaticResource Section}"/>
+                                                    <TextBlock Text="{Binding Faults}" Style="{StaticResource Body}" Foreground="{StaticResource SubText}"/>
+                                                </StackPanel>
+
+                                                <!-- 收起时的提示行 -->
+                                                <TextBlock Text="{Binding KeyDataCountText}" Foreground="{StaticResource SubText}"
+                                                           FontSize="11" Margin="14,6,0,0"
+                                                           Visibility="{Binding IsExpanded, Converter={StaticResource InvBoolToVis}}"/>
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+    </DockPanel>
+</UserControl>

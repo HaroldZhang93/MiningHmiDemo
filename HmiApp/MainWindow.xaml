@@ -30,9 +30,7 @@
                 <StackPanel Grid.Column="1" Orientation="Horizontal">
                     <TextBlock Text="IP："/>
                     <TextBox Text="{Binding Ip}" Width="110"/>
-                    <TextBlock Text="端口：" Margin="10,0,0,0"/>
-                    <TextBox Text="{Binding Port}" Width="56"/>
-                    <Button Content="{Binding ConnectText}" Command="{Binding ConnectCommand}" Width="76" Margin="10,0,0,0"/>
+                    <Button Content="{Binding ConnectText}" Command="{Binding ConnectCommand}" Width="120" Margin="10,0,0,0"/>
                     <TextBlock Text="{Binding StatusText}" Foreground="{StaticResource Cyan}" Margin="12,0,0,0"/>
                 </StackPanel>
 
@@ -48,16 +46,29 @@
             </Grid>
         </Border>
 
-        <!-- 多 tab -->
-        <TabControl>
-            <TabItem Header="总览大屏"><views:OverviewView/></TabItem>
-            <TabItem Header="设备控制"><views:DeviceControlView/></TabItem>
-            <TabItem Header="综采三机"><views:ThreeMachineView/></TabItem>
-            <TabItem Header="运输系统"><views:TransportView/></TabItem>
-            <TabItem Header="供液 / 供电"><views:PowerFluidView/></TabItem>
-            <TabItem Header="PLC 控制"><views:PlcControlView DataContext="{Binding Plc}"/></TabItem>
-            <TabItem Header="收发报文"><views:FrameView/></TabItem>
-            <TabItem Header="写入 / 调度"><views:WriteView/></TabItem>
-        </TabControl>
+        <!-- 主体：左侧 TabControl + 右侧常驻报文列（可拖动分隔） -->
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="5"/>
+                <ColumnDefinition Width="350" MinWidth="280" MaxWidth="560"/>
+            </Grid.ColumnDefinitions>
+
+            <TabControl Grid.Column="0">
+                <TabItem Header="总览大屏"><views:OverviewView/></TabItem>
+                <TabItem Header="设备控制"><views:DeviceControlView/></TabItem>
+                <TabItem Header="综采三机"><views:ThreeMachineView/></TabItem>
+                <TabItem Header="运输系统"><views:TransportView/></TabItem>
+                <TabItem Header="供液 / 供电"><views:PowerFluidView/></TabItem>
+                <TabItem Header="设备说明"><views:DeviceInfoView/></TabItem>
+                <TabItem Header="PLC 控制"><views:PlcControlView DataContext="{Binding Plc}"/></TabItem>
+                <TabItem Header="写入 / 调度"><views:WriteView/></TabItem>
+            </TabControl>
+
+            <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Stretch" Background="#1A3358"/>
+
+            <!-- 收发报文：常驻最右端 -->
+            <views:FrameView Grid.Column="2" Margin="2,0,0,0"/>
+        </Grid>
     </DockPanel>
 </Window>

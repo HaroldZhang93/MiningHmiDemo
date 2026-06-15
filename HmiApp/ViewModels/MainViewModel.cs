@@ -1,7 +1,7 @@
 // ============================================================================
 //  MainViewModel —— 整个上位机的 ViewModel（MVVM 核心）
-//  负责：连接/断开、800ms 轮询、把读到的值回填各 PointVm(绑定自动刷新界面)、
-//        收发报文集合、趋势/柱状图数据(LiveCharts)、写入与周期调度命令。
+//  多从站分区版：为每个区(综采三机/运输/供液/供电)各维护一条 Modbus 连接，
+//  分区轮询、分区读写——模拟井下"一个上位机(主站)管多个控制器(从站)"的拓扑。
 //  复用：Shared.ModbusTcpMaster(手写主站) + HmiApp.WriteScheduler。
 // ============================================================================
 
@@ -19,16 +19,16 @@ namespace HmiApp.ViewModels;
 
 public partial class MainViewModel : ObservableObject
 {
-    private ModbusTcpMaster? _master;
+    // 每个分区一条连接（Category → 该区从站的 Modbus 主站连接）
+    private readonly Dictionary<Category, ModbusTcpMaster> _zone = new();
     private readonly DispatcherTimer _poll = new() { Interval = TimeSpan.FromMilliseconds(800) };
     private readonly List<PointVm> _all = new();
     private readonly List<PointVm> _supportPts;
 
     [ObservableProperty] private string _ip = "127.0.0.1";
-    [ObservableProperty] private string _port = "1502";
     [ObservableProperty] private bool _isConnected;
     [ObservableProperty] private string _statusText = "未连接";
-    [ObservableProperty] private string _connectText = "连接";
+    [ObservableProperty] private string _connectText = "连接全部分区";
 
     [ObservableProperty] private int _runningCount;
     [ObservableProperty] private int _alarmCount;
@@ -56,14 +56,9 @@ public partial class MainViewModel : ObservableObject
     public string SelectedFrameDetail => SelectedFrame is null ? "" : $"完整帧 ({SelectedFrame.DirText}):\r\n{SelectedFrame.Hex}\r\n\r\n{SelectedFrame.Detail}";
     partial void OnSelectedFrameChanged(FrameLog? value) => OnPropertyChanged(nameof(SelectedFrameDetail));
 
-    // 趋势（LiveCharts 折线）
+    // 趋势：多个可独立选点的趋势图槽位（总览放 3 个，用户各自选监控项）
     public ObservableCollection<PointVm> AnalogPoints { get; } = new();
-    [ObservableProperty] private PointVm? _trendPoint;
-    private readonly ObservableCollection<double> _trendValues = new();
-    public ISeries[] TrendSeries { get; }
-    public Axis[] TrendXAxes { get; }
-    public Axis[] TrendYAxes { get; }
-    partial void OnTrendPointChanged(PointVm? value) => _trendValues.Clear();
+    public IReadOnlyList<TrendSlotVm> Trends { get; }
 
     // 柱状（组合开关回路电流 / 支架群压力）
     private readonly ObservableCollection<double> _loopCurrents = new() { 0, 0, 0, 0 };
@@ -83,15 +78,26 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private string _writeHint = "";
     public WriteScheduler Scheduler { get; } = new();
 
-    // PLC 控制 tab 的子 ViewModel（独立连接 OpenPLC）
-    public PlcViewModel Plc { get; } = new();
+    // PLC 控制 tab 的子 ViewModel（独立连接 OpenPLC；传入 root 以共享报文栏）
+    public PlcViewModel Plc { get; }
 
     // 设备控制卡（工业 HMI 风格：开关/滑块/动作按钮）
     public ObservableCollection<DeviceControlVm> Controls { get; } = new();
     [ObservableProperty] private string _ctrlHint = "";
 
+    // 设备功能说明（题目四：业务学习——纯知识性，不连 Modbus）
+    public IReadOnlyList<DeviceInfoGroup> DeviceInfoGroups { get; } = DeviceInfoCatalog.Build();
+    [RelayCommand] private void ExpandAllInfo() => SetAllInfo(true);
+    [RelayCommand] private void CollapseAllInfo() => SetAllInfo(false);
+    private void SetAllInfo(bool on)
+    {
+        foreach (var g in DeviceInfoGroups)
+            foreach (var d in g.Devices) d.IsExpanded = on;
+    }
+
     public MainViewModel()
     {
+        Plc = new PlcViewModel(this);
         foreach (var p in RegisterMap.Points)
         {
             var vm = new PointVm(p);
@@ -111,20 +117,12 @@ public partial class MainViewModel : ObservableObject
         EmulPressure = Find("乳化泵站", "出口压力");
         SubVoltage = Find("移变", "进线电压");
         BeltSpeed = Find("皮带输送机", "带速");
-        TrendPoint = EmulPressure ?? AnalogPoints.FirstOrDefault();
         WriteTarget = WritablePoints.FirstOrDefault();
 
         _supportPts = _all.Where(v => v.Device == "液压支架群").OrderBy(v => v.Point.Address).ToList();
         foreach (var _ in _supportPts) _supportPressures.Add(0);
 
-        // LiveCharts 配色
-        var cyan = new SolidColorPaint(SKColor.Parse("#2A9FD6")) { StrokeThickness = 2 };
         var subPaint = new SolidColorPaint(SKColor.Parse("#8FA6C4"));
-        var gridPaint = new SolidColorPaint(SKColor.Parse("#244468")) { StrokeThickness = 1 };
-
-        TrendSeries = new ISeries[] { new LineSeries<double> { Values = _trendValues, Stroke = cyan, Fill = null, GeometrySize = 0, LineSmoothness = 0.3 } };
-        TrendXAxes = new[] { new Axis { IsVisible = false } };
-        TrendYAxes = new[] { new Axis { LabelsPaint = subPaint, SeparatorsPaint = gridPaint } };
 
         LoopSeries = new ISeries[] { new ColumnSeries<double> { Values = _loopCurrents, Fill = new SolidColorPaint(SKColor.Parse("#2A9FD6")) } };
         LoopXAxes = new[] { new Axis { Labels = new[] { "回路1", "回路2", "回路3", "回路4" }, LabelsPaint = subPaint } };
@@ -132,21 +130,28 @@ public partial class MainViewModel : ObservableObject
         SupportSeries = new ISeries[] { new ColumnSeries<double> { Values = _supportPressures, Fill = new SolidColorPaint(SKColor.Parse("#1D4E89")) } };
         SupportXAxes = new[] { new Axis { Labels = Enumerable.Range(1, _supportPts.Count).Select(i => $"{i}#").ToArray(), LabelsPaint = subPaint } };
 
+        Trends = new[]
+        {
+            new TrendSlotVm(AnalogPoints, EmulPressure, "#2A9FD6"),
+            new TrendSlotVm(AnalogPoints, ShearerCurrent, "#2ECC71"),
+            new TrendSlotVm(AnalogPoints, SubVoltage, "#F39C12"),
+        };
+
         _poll.Tick += OnPoll;
         BuildControls();
     }
 
     private PointVm? Find(string d, string n) => _all.FirstOrDefault(v => v.Device == d && v.Name == n);
 
-    // ===================== 设备控制卡 =====================
-    public void CtrlCoil(ushort a, bool on) => CtrlDo(() => _master!.WriteSingleCoil(a, on), $"线圈{a}={(on ? "ON" : "OFF")}");
-    public void CtrlReg(ushort a, ushort v) => CtrlDo(() => _master!.WriteSingleRegister(a, v), $"寄存器{a}={v}");
-    public void CtrlMulti(ushort a, ushort[] v) => CtrlDo(() => _master!.WriteMultipleRegisters(a, v), $"多寄存器@{a}×{v.Length}");
+    // ===================== 设备控制卡（按分区路由到对应从站）=====================
+    public void CtrlCoil(Category z, ushort a, bool on) => CtrlDo(z, m => m.WriteSingleCoil(a, on), $"线圈{a}={(on ? "ON" : "OFF")}");
+    public void CtrlReg(Category z, ushort a, ushort v) => CtrlDo(z, m => m.WriteSingleRegister(a, v), $"寄存器{a}={v}");
+    public void CtrlMulti(Category z, ushort a, ushort[] v) => CtrlDo(z, m => m.WriteMultipleRegisters(a, v), $"多寄存器@{a}×{v.Length}");
 
-    private void CtrlDo(Action act, string label)
+    private void CtrlDo(Category z, Action<ModbusTcpMaster> act, string label)
     {
-        if (_master == null) { CtrlHint = "未连接（请先在顶部连接 SlaveSim）"; return; }
-        try { act(); CtrlHint = "已下发：" + label; }
+        if (!_zone.TryGetValue(z, out var m)) { CtrlHint = $"未连接「{RegisterMap.CategoryName(z)}」区"; return; }
+        try { act(m); CtrlHint = "已下发：" + label; }
         catch (Exception ex) { CtrlHint = "下发失败：" + ex.Message; }
     }
 
@@ -155,105 +160,122 @@ public partial class MainViewModel : ObservableObject
         List<PointVm> Rd(params (string d, string n)[] xs)
             => xs.Select(x => Find(x.d, x.n)).Where(p => p != null).Cast<PointVm>().ToList();
 
-        Controls.Add(new DeviceControlVm(this) { Device = "采煤机", RunPoint = Find("采煤机", "运行中"),
+        var TM = Category.ThreeMachine; var TR = Category.Transport; var FL = Category.Fluid; var PW = Category.Power;
+
+        Controls.Add(new DeviceControlVm(this) { Device = "采煤机", Zone = TM, RunPoint = Find("采煤机", "运行中"),
             Readings = Rd(("采煤机", "左截割电机电流"), ("采煤机", "牵引速度"), ("采煤机", "牵引电机温度")),
             HasStartStop = true, StartCoil = 0, HasSetpoint = true, SetpointLabel = "牵引速度设定 (m/min)", SpMin = 0, SpMax = 12, SpAddr = 0, SpScale = 0.1, Setpoint = 6 });
 
-        Controls.Add(new DeviceControlVm(this) { Device = "刮板输送机", RunPoint = Find("刮板输送机", "运行中"),
+        Controls.Add(new DeviceControlVm(this) { Device = "刮板输送机", Zone = TM, RunPoint = Find("刮板输送机", "运行中"),
             Readings = Rd(("刮板输送机", "电机电流"), ("刮板输送机", "链速"), ("刮板输送机", "链张力")),
             HasStartStop = true, StartCoil = 20, HasSetpoint = true, SetpointLabel = "链速设定 (m/s)", SpMin = 0, SpMax = 2.5, SpAddr = 20, SpScale = 0.01, Setpoint = 1.2 });
 
-        Controls.Add(new DeviceControlVm(this) { Device = "转载机", RunPoint = Find("转载机", "运行中"),
+        Controls.Add(new DeviceControlVm(this) { Device = "转载机", Zone = TR, RunPoint = Find("转载机", "运行中"),
             Readings = Rd(("转载机", "电机电流"), ("转载机", "电机温度")), HasStartStop = true, StartCoil = 30 });
 
-        Controls.Add(new DeviceControlVm(this) { Device = "破碎机", RunPoint = Find("破碎机", "运行中"),
+        Controls.Add(new DeviceControlVm(this) { Device = "破碎机", Zone = TR, RunPoint = Find("破碎机", "运行中"),
             Readings = Rd(("破碎机", "电机电流"), ("破碎机", "振动")), HasStartStop = true, StartCoil = 40 });
 
-        Controls.Add(new DeviceControlVm(this) { Device = "皮带输送机", RunPoint = Find("皮带输送机", "运行中"),
+        Controls.Add(new DeviceControlVm(this) { Device = "皮带输送机", Zone = TR, RunPoint = Find("皮带输送机", "运行中"),
             Readings = Rd(("皮带输送机", "带速"), ("皮带输送机", "张力")), HasStartStop = true, StartCoil = 50 });
 
-        Controls.Add(new DeviceControlVm(this) { Device = "乳化泵站", RunPoint = Find("乳化泵站", "运行中"),
+        Controls.Add(new DeviceControlVm(this) { Device = "乳化泵站", Zone = FL, RunPoint = Find("乳化泵站", "运行中"),
             Readings = Rd(("乳化泵站", "出口压力"), ("乳化泵站", "液箱液位")),
             HasStartStop = true, StartCoil = 60, HasSetpoint = true, SetpointLabel = "出口压力设定 (MPa)", SpMin = 0, SpMax = 40, SpAddr = 60, SpScale = 0.1, Setpoint = 32 });
 
-        Controls.Add(new DeviceControlVm(this) { Device = "喷雾泵站", RunPoint = Find("喷雾泵站", "运行中"),
+        Controls.Add(new DeviceControlVm(this) { Device = "喷雾泵站", Zone = FL, RunPoint = Find("喷雾泵站", "运行中"),
             Readings = Rd(("喷雾泵站", "出口压力"), ("喷雾泵站", "流量")),
             HasStartStop = true, StartCoil = 70, HasSetpoint = true, SetpointLabel = "出口压力设定 (MPa)", SpMin = 0, SpMax = 16, SpAddr = 70, SpScale = 0.1, Setpoint = 8 });
 
-        Controls.Add(new DeviceControlVm(this) { Device = "液压支架", RunPoint = Find("液压支架", "护帮板伸出"),
+        Controls.Add(new DeviceControlVm(this) { Device = "液压支架", Zone = TM, RunPoint = Find("液压支架", "护帮板伸出"),
             Readings = Rd(("液压支架", "前柱压力"), ("液压支架", "后柱压力"), ("液压支架", "推移行程")),
             Actions = new[] {
-                new DeviceActionVm("升柱", () => CtrlCoil(10, true)),
-                new DeviceActionVm("降柱", () => CtrlCoil(10, false)),
-                new DeviceActionVm("移架", () => CtrlCoil(12, true)),
+                new DeviceActionVm("升柱", () => CtrlCoil(TM, 10, true)),
+                new DeviceActionVm("降柱", () => CtrlCoil(TM, 10, false)),
+                new DeviceActionVm("移架", () => CtrlCoil(TM, 12, true)),
             } });
 
-        Controls.Add(new DeviceControlVm(this) { Device = "液压支架群·压力设定",
+        Controls.Add(new DeviceControlVm(this) { Device = "液压支架群·压力设定", Zone = TM,
             Readings = Rd(("液压支架群", "1#立柱压力设定"), ("液压支架群", "8#立柱压力设定")),
             HasSetpoint = true, SetpointLabel = "全部立柱压力设定 (MPa·FC16群写)", SpMin = 0, SpMax = 40, SpAddr = RegisterMap.SupportGroupStart, SpScale = 0.1, SpMulti = true, Setpoint = 30 });
 
         for (int i = 0; i < 4; i++)
         {
             ushort cc = (ushort)(90 + i);
-            Controls.Add(new DeviceControlVm(this) { Device = $"组合开关·回路{i + 1}", RunPoint = Find("组合开关", $"回路{i + 1}通断"),
+            Controls.Add(new DeviceControlVm(this) { Device = $"组合开关·回路{i + 1}", Zone = PW, RunPoint = Find("组合开关", $"回路{i + 1}通断"),
                 Readings = Rd(("组合开关", $"回路{i + 1}电流")), HasStartStop = true, StartCoil = cc, StartLabel = "合闸", StopLabel = "分闸" });
         }
     }
 
-    // ===================== 连接 =====================
+    // ===================== 连接（一键连全部分区）=====================
     [RelayCommand]
     private void Connect()
     {
-        if (_master != null) { Disconnect(); return; }
-        try
+        if (_zone.Count > 0) { Disconnect(); return; }
+        var fails = new List<string>();
+        foreach (Category cat in Enum.GetValues<Category>())
         {
-            _master = new ModbusTcpMaster(Ip.Trim(), int.Parse(Port.Trim()), RegisterMap.SlaveId);
-            _master.FrameLogged += OnFrameLogged;
-            _poll.Start();
-            IsConnected = true;
-            ConnectText = "断开";
-            StatusText = "已连接";
+            try
+            {
+                var m = new ModbusTcpMaster(Ip.Trim(), RegisterMap.PortOf(cat), RegisterMap.SlaveId, RegisterMap.CategoryName(cat));
+                m.FrameLogged += LogFrame;
+                _zone[cat] = m;
+            }
+            catch (Exception ex) { fails.Add(RegisterMap.CategoryName(cat)); _ = ex; }
         }
-        catch (Exception ex) { StatusText = "连接失败：" + ex.Message; Disconnect(); }
+        if (_zone.Count == 0) { StatusText = "全部分区连接失败（确认 SlaveSim 已启动）"; return; }
+        IsConnected = true;
+        ConnectText = "断开";
+        _poll.Start();
+        StatusText = $"已连接 {_zone.Count}/4 区" + (fails.Count > 0 ? "（失败:" + string.Join(",", fails) + "）" : "");
     }
 
     private void Disconnect()
     {
         _poll.Stop();
-        if (_master != null) { _master.FrameLogged -= OnFrameLogged; _master.Dispose(); _master = null; }
+        foreach (var m in _zone.Values) { m.FrameLogged -= LogFrame; m.Dispose(); }
+        _zone.Clear();
         IsConnected = false;
-        ConnectText = "连接";
+        ConnectText = "连接全部分区";
         if (StatusText.StartsWith("已连接")) StatusText = "未连接";
     }
 
-    // ===================== 轮询 =====================
+    // ===================== 轮询（逐区）=====================
     private void OnPoll(object? s, EventArgs e)
     {
-        if (_master == null) return;
-        try
+        if (_zone.Count == 0) return;
+        foreach (var (cat, m) in _zone.ToList())
         {
-            UpdateRegs(Area.InputRegister, (a, c) => _master!.ReadInputRegisters(a, c));
-            UpdateRegs(Area.HoldingRegister, (a, c) => _master!.ReadHoldingRegisters(a, c));
-            UpdateBits(Area.DiscreteInput, (a, c) => _master!.ReadDiscreteInputs(a, c));
-            UpdateBits(Area.Coil, (a, c) => _master!.ReadCoils(a, c));
-
-            SyncAlarms();
-            RunningCount = _all.Count(v => v.IsOn && v.Name.Contains("运行"));
-            AlarmCount = Alarms.Count;
-
-            if (TrendPoint != null) { _trendValues.Add(TrendPoint.Numeric); while (_trendValues.Count > 120) _trendValues.RemoveAt(0); }
-            for (int i = 0; i < 4; i++) _loopCurrents[i] = Find("组合开关", $"回路{i + 1}电流")?.Numeric ?? 0;
-            for (int i = 0; i < _supportPts.Count; i++) _supportPressures[i] = _supportPts[i].Numeric;
-
-            StatusText = $"已连接 · {DateTime.Now:HH:mm:ss}";
+            try { PollZone(cat, m); }
+            catch (Exception ex)
+            {
+                m.FrameLogged -= LogFrame; m.Dispose(); _zone.Remove(cat);
+                StatusText = $"「{RegisterMap.CategoryName(cat)}」区掉线：{ex.Message}";
+            }
         }
-        catch (Exception ex) { StatusText = "读取异常：" + ex.Message; Disconnect(); }
+        SyncAlarms();
+        RunningCount = _all.Count(v => v.IsOn && v.Name.Contains("运行"));
+        AlarmCount = Alarms.Count;
+        foreach (var t in Trends) t.Push();
+        for (int i = 0; i < 4; i++) _loopCurrents[i] = Find("组合开关", $"回路{i + 1}电流")?.Numeric ?? 0;
+        for (int i = 0; i < _supportPts.Count; i++) _supportPressures[i] = _supportPts[i].Numeric;
+
+        if (_zone.Count == 0) { _poll.Stop(); IsConnected = false; ConnectText = "连接全部分区"; }
+        else if (!StatusText.Contains("掉线")) StatusText = $"已连接 {_zone.Count}/4 区 · {DateTime.Now:HH:mm:ss}";
     }
 
-    // 按数据区批量读；保持寄存器跨度大(0..207>125上限)，按 120 一段分块读
-    private void UpdateRegs(Area area, Func<ushort, ushort, ushort[]> read)
+    private void PollZone(Category cat, ModbusTcpMaster m)
     {
-        var pts = _all.Where(v => v.Point.Area == area).ToList();
+        UpdateRegs(cat, Area.InputRegister, (a, c) => m.ReadInputRegisters(a, c));
+        UpdateRegs(cat, Area.HoldingRegister, (a, c) => m.ReadHoldingRegisters(a, c));
+        UpdateBits(cat, Area.DiscreteInput, (a, c) => m.ReadDiscreteInputs(a, c));
+        UpdateBits(cat, Area.Coil, (a, c) => m.ReadCoils(a, c));
+    }
+
+    // 按"分区 + 数据区"批量读；保持寄存器跨度大(三机区到207)，按 120 一段分块读
+    private void UpdateRegs(Category cat, Area area, Func<ushort, ushort, ushort[]> read)
+    {
+        var pts = _all.Where(v => v.Point.Category == cat && v.Point.Area == area).ToList();
         if (pts.Count == 0) return;
         ushort min = pts.Min(v => v.Point.Address), max = pts.Max(v => v.Point.Address);
         for (int start = min; start <= max; start += 120)
@@ -265,9 +287,9 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
-    private void UpdateBits(Area area, Func<ushort, ushort, bool[]> read)
+    private void UpdateBits(Category cat, Area area, Func<ushort, ushort, bool[]> read)
     {
-        var pts = _all.Where(v => v.Point.Area == area).ToList();
+        var pts = _all.Where(v => v.Point.Category == cat && v.Point.Area == area).ToList();
         if (pts.Count == 0) return;
         ushort min = pts.Min(v => v.Point.Address), max = pts.Max(v => v.Point.Address);
         bool[] data = read(min, (ushort)(max - min + 1));
@@ -282,7 +304,7 @@ public partial class MainViewModel : ObservableObject
     }
 
     // ===================== 报文 =====================
-    private void OnFrameLogged(FrameLog f)
+    public void LogFrame(FrameLog f)
     {
         if (FramePaused) return;
         if (!f.IsWrite && !LogPolling) return;
@@ -314,29 +336,29 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand] private void StopAll() => Scheduler.StopAll();
     [RelayCommand] private void StopTask(WriteTaskVm t) => Scheduler.Stop(t);
 
-    // 一键演示多寄存器写(FC16)：把支架群 1#~8# 压力设定一次写完
+    // 一键演示多寄存器写(FC16)：把支架群 1#~8# 压力设定一次写完（三机区）
     [RelayCommand]
     private void WriteSupportGroup()
     {
-        if (_master == null) { WriteHint = "未连接"; return; }
+        if (!_zone.TryGetValue(Category.ThreeMachine, out var m)) { WriteHint = "未连接三机区"; return; }
         ushort val = ushort.TryParse(WriteValue.Trim(), out var v) ? v : (ushort)320;
         var vals = Enumerable.Repeat(val, RegisterMap.SupportGroupCount).ToArray();
-        try { _master.WriteMultipleRegisters(RegisterMap.SupportGroupStart, vals); WriteHint = $"FC16 群写支架群压力设定 ×{vals.Length} = {val}"; }
+        try { m.WriteMultipleRegisters(RegisterMap.SupportGroupStart, vals); WriteHint = $"FC16 群写支架群压力设定 ×{vals.Length} = {val}"; }
         catch (Exception ex) { WriteHint = "群写失败：" + ex.Message; }
     }
 
     private (string desc, Action action)? BuildWrite()
     {
-        if (_master == null) { WriteHint = "未连接"; return null; }
         if (WriteTarget is null) { WriteHint = "未选点位"; return null; }
         var p = WriteTarget.Point;
+        if (!_zone.TryGetValue(p.Category, out var m)) { WriteHint = $"未连接「{RegisterMap.CategoryName(p.Category)}」区"; return null; }
         string valText = WriteValue.Trim(), bitText = WriteBit.Trim();
         ushort addr = p.Address;
 
         if (p.Area == Area.Coil)
         {
             bool on = valText is "1" or "true" or "ON" or "on";
-            return ($"写线圈 @{addr} = {(on ? "ON" : "OFF")}", () => _master!.WriteSingleCoil(addr, on));
+            return ($"写线圈 @{addr} = {(on ? "ON" : "OFF")}", () => m.WriteSingleCoil(addr, on));
         }
 
         if (!string.IsNullOrEmpty(bitText))   // 按位写：read-modify-write
@@ -345,9 +367,9 @@ public partial class MainViewModel : ObservableObject
             bool set = valText is "1" or "true";
             return ($"按位写 @{addr}.bit{bit} = {(set ? 1 : 0)}", () =>
             {
-                ushort cur = _master!.ReadHoldingRegisters(addr, 1)[0];
+                ushort cur = m.ReadHoldingRegisters(addr, 1)[0];
                 ushort nw = set ? (ushort)(cur | (1 << bit)) : (ushort)(cur & ~(1 << bit));
-                _master!.WriteSingleRegister(addr, nw);
+                m.WriteSingleRegister(addr, nw);
             });
         }
 
@@ -357,11 +379,11 @@ public partial class MainViewModel : ObservableObject
             var vals = new ushort[parts.Length];
             for (int i = 0; i < parts.Length; i++)
                 if (!ushort.TryParse(parts[i], out vals[i])) { WriteHint = "多值非法"; return null; }
-            return ($"写多寄存器 @{addr} ×{vals.Length}", () => _master!.WriteMultipleRegisters(addr, vals));
+            return ($"写多寄存器 @{addr} ×{vals.Length}", () => m.WriteMultipleRegisters(addr, vals));
         }
 
         if (!ushort.TryParse(valText, out ushort vv)) { WriteHint = "值应为 0~65535 整数"; return null; }
-        return ($"写寄存器 @{addr} = {vv}", () => _master!.WriteSingleRegister(addr, vv));
+        return ($"写寄存器 @{addr} = {vv}", () => m.WriteSingleRegister(addr, vv));
     }
 
     private static int ParseInt(string s, int dft) => int.TryParse(s.Trim(), out int v) ? v : dft;

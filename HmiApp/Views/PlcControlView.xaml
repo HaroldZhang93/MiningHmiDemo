@@ -78,23 +78,23 @@
         <!-- 右：说明 + 演示步骤 -->
         <Border Grid.Column="1" Style="{StaticResource Card}">
             <StackPanel>
-                <TextBlock Text="这是什么 / 怎么演示" Style="{StaticResource H1}" Margin="0,0,0,10"/>
+                <TextBlock Text="功能说明 / 操作步骤" Style="{StaticResource H1}" Margin="0,0,0,10"/>
                 <TextBlock TextWrapping="Wrap" Foreground="{StaticResource TextLight}" LineHeight="22">
-                    <Run Text="本页连接的是真 PLC(OpenPLC) 而非模拟从站。乳化泵的实际启停由 PLC 梯形图按联锁逻辑决定，上位机只能下指令——这才是『控制 PLC』。"/>
+                    <Run Text="本页连接真 PLC(OpenPLC)。默认 127.0.0.1:5020（OpenPLC v4 的 Modbus 端口是 5020，不是 502）。乳化泵实际启停由 PLC 梯形图按联锁逻辑决定，上位机只能下指令——这才是『控制 PLC』。"/>
                     <LineBreak/><LineBreak/>
-                    <Run Text="PLC 梯形图逻辑：" FontWeight="Bold" Foreground="{StaticResource Cyan}"/>
+                    <Run Text="联锁逻辑：" FontWeight="Bold" Foreground="{StaticResource Cyan}"/>
                     <LineBreak/>
                     <Run Text="低液位 := 液位 &lt; 20；"/><LineBreak/>
                     <Run Text="泵运行 := 启泵请求 AND NOT 急停 AND NOT 低液位。"/>
                     <LineBreak/><LineBreak/>
-                    <Run Text="演示步骤：" FontWeight="Bold" Foreground="{StaticResource Cyan}"/>
+                    <Run Text="操作步骤：" FontWeight="Bold" Foreground="{StaticResource Cyan}"/>
                     <LineBreak/>
-                    <Run Text="1) 连接 PLC(127.0.0.1:502) → 点『启泵』→ 泵运行灯亮。"/><LineBreak/>
-                    <Run Text="2) 写液位=10 → 低液位灯亮，泵运行灯灭：PLC 否决了上位机的启泵(安全联锁)。"/><LineBreak/>
+                    <Run Text="1) 点『连接 PLC』(默认 127.0.0.1:5020) → 点『启泵』→ 泵运行指示亮。"/><LineBreak/>
+                    <Run Text="2) 写液位=10（&lt;20）→ 低液位报警亮，泵运行熄灭：PLC 联锁强制停泵。"/><LineBreak/>
                     <Run Text="3) 写液位=85 → 联锁解除，泵自动恢复运行。"/><LineBreak/>
-                    <Run Text="4) 点『急停』→ 泵立即停；点『解除急停』→ 恢复。"/>
+                    <Run Text="4) 点『急停』→ 泵立即停机；点『解除急停』→ 恢复。"/>
                     <LineBreak/><LineBreak/>
-                    <Run Text="面试讲法：设备层(传感器/执行器) → 控制层(PLC 梯形图做联锁) → 应用层(上位机监控下发)，三层通过 Modbus TCP 打通，正是 JD 第5条『设备-控制-平台数据打通』。" Foreground="{StaticResource SubText}"/>
+                    <Run Text="系统架构：设备层(传感器/执行器) → 控制层(PLC 联锁) → 应用层(上位机监控下发)，三层经 Modbus TCP 贯通；安全联锁在 PLC 侧执行，独立于上位机。" Foreground="{StaticResource SubText}"/>
                 </TextBlock>
             </StackPanel>
         </Border>

@@ -37,15 +37,17 @@ public class ModbusTcpMaster : IDisposable
     private readonly TcpClient _tcp;
     private readonly NetworkStream _stream;
     private readonly byte _unitId;
+    private readonly string _tag;   // 来源标签（如 "PLC"），加在报文摘要前以区分不同连接
     private readonly object _lock = new();
     private ushort _tid;   // 事务ID，每次请求自增（响应里会原样带回，可用于匹配）
 
     /// <summary>每收发一帧就触发一次，界面订阅它来显示报文。</summary>
     public event Action<FrameLog>? FrameLogged;
 
-    public ModbusTcpMaster(string ip, int port, byte unitId)
+    public ModbusTcpMaster(string ip, int port, byte unitId, string tag = "")
     {
         _unitId = unitId;
+        _tag = tag;
         _tcp = new TcpClient();
         _tcp.Connect(ip, port);
         _stream = _tcp.GetStream();
@@ -158,7 +160,7 @@ public class ModbusTcpMaster : IDisposable
         {
             Time = DateTime.Now,
             Dir = dir,
-            Summary = summary,
+            Summary = string.IsNullOrEmpty(_tag) ? summary : $"[{_tag}] {summary}",
             Hex = HexAll(adu),
             Detail = detail,
             IsWrite = isWrite || isWriteHint,

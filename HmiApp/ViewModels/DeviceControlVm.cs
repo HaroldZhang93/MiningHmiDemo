@@ -8,6 +8,7 @@
 using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using Shared;
 
 namespace HmiApp.ViewModels;
 
@@ -17,6 +18,8 @@ public partial class DeviceControlVm : ObservableObject
     public DeviceControlVm(MainViewModel root) => _root = root;
 
     public string Device { get; init; } = "";
+    public Category Zone { get; init; }   // 该设备所属分区（决定写到哪条连接）
+    public string ZoneName => RegisterMap.CategoryName(Zone);   // 分区中文名（总览分组标题用）
 
     // 运行指示灯（绑定某个状态点位；为空则不显示灯）
     public PointVm? RunPoint { get; init; }
@@ -45,15 +48,15 @@ public partial class DeviceControlVm : ObservableObject
     public IReadOnlyList<DeviceActionVm> Actions { get; init; } = Array.Empty<DeviceActionVm>();
     public bool HasActions => Actions.Count > 0;
 
-    [RelayCommand] private void Start() => _root.CtrlCoil(StartCoil, true);
-    [RelayCommand] private void Stop() => _root.CtrlCoil(StartCoil, false);
+    [RelayCommand] private void Start() => _root.CtrlCoil(Zone, StartCoil, true);
+    [RelayCommand] private void Stop() => _root.CtrlCoil(Zone, StartCoil, false);
 
     [RelayCommand]
     private void Send()
     {
         ushort raw = (ushort)Math.Max(0, Math.Round(Setpoint / SpScale));
-        if (SpMulti) _root.CtrlMulti(SpAddr, Enumerable.Repeat(raw, (int)Shared.RegisterMap.SupportGroupCount).ToArray());
-        else _root.CtrlReg(SpAddr, raw);
+        if (SpMulti) _root.CtrlMulti(Zone, SpAddr, Enumerable.Repeat(raw, (int)RegisterMap.SupportGroupCount).ToArray());
+        else _root.CtrlReg(Zone, SpAddr, raw);
     }
 }
 

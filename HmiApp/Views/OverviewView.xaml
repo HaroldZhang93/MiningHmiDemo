@@ -1,85 +1,154 @@
 <UserControl x:Class="HmiApp.Views.OverviewView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:lvc="clr-namespace:LiveChartsCore.SkiaSharpView.WPF;assembly=LiveChartsCore.SkiaSharpView.WPF">
-    <Grid Margin="4">
+             xmlns:lvc="clr-namespace:LiveChartsCore.SkiaSharpView.WPF;assembly=LiveChartsCore.SkiaSharpView.WPF"
+             SizeChanged="OnSizeChanged">
+    <Grid Margin="2">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
-        <!-- KPI 卡片行 -->
+        <!-- ===== 顶部 KPI 条 ===== -->
         <UniformGrid Grid.Row="0" Rows="1">
-            <Border Style="{StaticResource Card}">
-                <StackPanel><TextBlock Text="设备总数" Style="{StaticResource KpiCaption}"/>
-                    <TextBlock Text="{Binding DeviceCount}" Style="{StaticResource KpiValue}"/></StackPanel>
-            </Border>
-            <Border Style="{StaticResource Card}">
-                <StackPanel><TextBlock Text="运行设备" Style="{StaticResource KpiCaption}"/>
-                    <TextBlock Text="{Binding RunningCount}" Style="{StaticResource KpiValue}" Foreground="{StaticResource Ok}"/></StackPanel>
-            </Border>
-            <Border Style="{StaticResource Card}">
-                <StackPanel><TextBlock Text="当前报警" Style="{StaticResource KpiCaption}"/>
-                    <TextBlock Text="{Binding AlarmCount}" Style="{StaticResource KpiValue}" Foreground="{StaticResource Alarm}"/></StackPanel>
-            </Border>
-            <Border Style="{StaticResource Card}">
-                <StackPanel><TextBlock Text="乳化泵出口压力" Style="{StaticResource KpiCaption}"/>
-                    <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="{Binding EmulPressure.Value}" Style="{StaticResource KpiValue}"/>
-                        <TextBlock Text="{Binding EmulPressure.Unit}" Foreground="{StaticResource SubText}" VerticalAlignment="Bottom" Margin="4,0,0,4"/>
-                    </StackPanel></StackPanel>
-            </Border>
-            <Border Style="{StaticResource Card}">
-                <StackPanel><TextBlock Text="采煤机截割电流" Style="{StaticResource KpiCaption}"/>
-                    <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="{Binding ShearerCurrent.Value}" Style="{StaticResource KpiValue}"/>
-                        <TextBlock Text="{Binding ShearerCurrent.Unit}" Foreground="{StaticResource SubText}" VerticalAlignment="Bottom" Margin="4,0,0,4"/>
-                    </StackPanel></StackPanel>
-            </Border>
-            <Border Style="{StaticResource Card}">
-                <StackPanel><TextBlock Text="移变进线电压" Style="{StaticResource KpiCaption}"/>
-                    <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="{Binding SubVoltage.Value}" Style="{StaticResource KpiValue}"/>
-                        <TextBlock Text="{Binding SubVoltage.Unit}" Foreground="{StaticResource SubText}" VerticalAlignment="Bottom" Margin="4,0,0,4"/>
-                    </StackPanel></StackPanel>
-            </Border>
+            <Border Style="{StaticResource Card}"><StackPanel>
+                <TextBlock Text="设备总数" Style="{StaticResource KpiCaption}"/>
+                <TextBlock Text="{Binding DeviceCount}" Foreground="{StaticResource TextLight}" FontSize="22" FontWeight="Bold"/></StackPanel></Border>
+            <Border Style="{StaticResource Card}"><StackPanel>
+                <TextBlock Text="运行设备" Style="{StaticResource KpiCaption}"/>
+                <TextBlock Text="{Binding RunningCount}" Foreground="{StaticResource Ok}" FontSize="22" FontWeight="Bold"/></StackPanel></Border>
+            <Border Style="{StaticResource Card}"><StackPanel>
+                <TextBlock Text="当前报警" Style="{StaticResource KpiCaption}"/>
+                <TextBlock Text="{Binding AlarmCount}" Foreground="{StaticResource Alarm}" FontSize="22" FontWeight="Bold"/></StackPanel></Border>
+            <Border Style="{StaticResource Card}"><StackPanel>
+                <TextBlock Text="乳化泵压力" Style="{StaticResource KpiCaption}"/>
+                <StackPanel Orientation="Horizontal"><TextBlock Text="{Binding EmulPressure.Value}" Foreground="{StaticResource Cyan}" FontSize="22" FontWeight="Bold"/>
+                    <TextBlock Text="{Binding EmulPressure.Unit}" Foreground="{StaticResource SubText}" VerticalAlignment="Bottom" Margin="3,0,0,3"/></StackPanel></StackPanel></Border>
+            <Border Style="{StaticResource Card}"><StackPanel>
+                <TextBlock Text="采煤机电流" Style="{StaticResource KpiCaption}"/>
+                <StackPanel Orientation="Horizontal"><TextBlock Text="{Binding ShearerCurrent.Value}" Foreground="{StaticResource Cyan}" FontSize="22" FontWeight="Bold"/>
+                    <TextBlock Text="{Binding ShearerCurrent.Unit}" Foreground="{StaticResource SubText}" VerticalAlignment="Bottom" Margin="3,0,0,3"/></StackPanel></StackPanel></Border>
+            <Border Style="{StaticResource Card}"><StackPanel>
+                <TextBlock Text="移变电压" Style="{StaticResource KpiCaption}"/>
+                <StackPanel Orientation="Horizontal"><TextBlock Text="{Binding SubVoltage.Value}" Foreground="{StaticResource Cyan}" FontSize="22" FontWeight="Bold"/>
+                    <TextBlock Text="{Binding SubVoltage.Unit}" Foreground="{StaticResource SubText}" VerticalAlignment="Bottom" Margin="3,0,0,3"/></StackPanel></StackPanel></Border>
         </UniformGrid>
 
-        <!-- 左趋势 / 右报警 -->
+        <!-- ===== 主区：左 设备墙(2列) | 右 图表区 ===== -->
         <Grid Grid.Row="1">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="2*"/>
                 <ColumnDefinition Width="*"/>
+                <ColumnDefinition x:Name="ChartCol" Width="2*"/>
             </Grid.ColumnDefinitions>
 
+            <!-- 左：设备状态总览（2 列规整网格）-->
             <Border Grid.Column="0" Style="{StaticResource Card}">
                 <DockPanel>
-                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,6">
-                        <TextBlock Text="实时趋势：" Style="{StaticResource H1}"/>
-                        <ComboBox ItemsSource="{Binding AnalogPoints}" SelectedItem="{Binding TrendPoint}" Width="240">
-                            <ComboBox.ItemTemplate>
+                    <TextBlock DockPanel.Dock="Top" Text="设备状态总览" Style="{StaticResource H1}" Margin="0,0,0,4"/>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <ItemsControl ItemsSource="{Binding Controls}">
+                            <ItemsControl.ItemsPanel><ItemsPanelTemplate><UniformGrid Columns="{Binding DeviceColumns, RelativeSource={RelativeSource AncestorType=UserControl}}"/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
                                 <DataTemplate>
-                                    <TextBlock><Run Text="{Binding Device, Mode=OneWay}"/> · <Run Text="{Binding Name, Mode=OneWay}"/></TextBlock>
+                                    <Border Background="{StaticResource Panel2}" BorderBrush="{StaticResource Border}" BorderThickness="1"
+                                            CornerRadius="4" Margin="3" Padding="8">
+                                        <StackPanel>
+                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                                <Ellipse Width="11" Height="11" Margin="0,0,6,0"
+                                                         Visibility="{Binding ShowLamp, Converter={StaticResource BoolToVis}}">
+                                                    <Ellipse.Style><Style TargetType="Ellipse"><Setter Property="Fill" Value="#555"/>
+                                                        <Style.Triggers><DataTrigger Binding="{Binding RunPoint.IsOn}" Value="True"><Setter Property="Fill" Value="{StaticResource Ok}"/></DataTrigger></Style.Triggers></Style></Ellipse.Style>
+                                                </Ellipse>
+                                                <TextBlock Text="{Binding Device}" FontWeight="Bold" Foreground="{StaticResource Cyan}" FontSize="12.5"/>
+                                            </StackPanel>
+                                            <ItemsControl ItemsSource="{Binding Readings}">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <DockPanel Margin="0,1">
+                                                            <TextBlock Text="{Binding Name}" Foreground="{StaticResource SubText}" FontSize="11" Width="92"/>
+                                                            <TextBlock FontSize="11">
+                                                                <Run Text="{Binding Value, Mode=OneWay}" Foreground="#E6ECF5"/>
+                                                                <Run Text="{Binding Unit, Mode=OneWay}" Foreground="#8FA6C4"/>
+                                                            </TextBlock>
+                                                        </DockPanel>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </StackPanel>
+                                    </Border>
                                 </DataTemplate>
-                            </ComboBox.ItemTemplate>
-                        </ComboBox>
-                    </StackPanel>
-                    <lvc:CartesianChart Series="{Binding TrendSeries}" XAxes="{Binding TrendXAxes}" YAxes="{Binding TrendYAxes}"/>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
                 </DockPanel>
             </Border>
 
-            <Border Grid.Column="1" Style="{StaticResource Card}">
-                <DockPanel>
-                    <TextBlock DockPanel.Dock="Top" Text="实时报警" Style="{StaticResource H1}" Foreground="{StaticResource Alarm}" Margin="0,0,0,6"/>
-                    <DataGrid ItemsSource="{Binding Alarms}">
-                        <DataGrid.Columns>
-                            <DataGridTextColumn Header="设备" Binding="{Binding Device}" Width="*"/>
-                            <DataGridTextColumn Header="报警点" Binding="{Binding Name}" Width="*"/>
-                            <DataGridTextColumn Header="状态" Binding="{Binding Value}" Width="60"/>
-                        </DataGrid.Columns>
-                    </DataGrid>
-                </DockPanel>
-            </Border>
+            <!-- 右：图表区（严格 2 行 × 3 列，6 个等大单元；窗口变窄时优先收起最左列）-->
+            <Grid Grid.Column="1">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition x:Name="ColA" Width="*"/>
+                    <ColumnDefinition x:Name="ColB" Width="*"/>
+                    <ColumnDefinition x:Name="ColC" Width="*"/>
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <!-- 第 1 列（最左，最先消失）：乳化泵压力趋势 / 组合开关回路电流 -->
+                <Border x:Name="CellA0" Grid.Row="0" Grid.Column="0" Style="{StaticResource Card}" DataContext="{Binding Trends[0]}">
+                    <DockPanel>
+                        <ComboBox DockPanel.Dock="Top" ItemsSource="{Binding Points}" SelectedItem="{Binding Selected}" Margin="0,0,0,2">
+                            <ComboBox.ItemTemplate><DataTemplate><TextBlock FontSize="11"><Run Text="{Binding Device, Mode=OneWay}"/>·<Run Text="{Binding Name, Mode=OneWay}"/></TextBlock></DataTemplate></ComboBox.ItemTemplate>
+                        </ComboBox>
+                        <lvc:CartesianChart Series="{Binding Series}" XAxes="{Binding XAxes}" YAxes="{Binding YAxes}"/>
+                    </DockPanel>
+                </Border>
+                <Border x:Name="CellA1" Grid.Row="1" Grid.Column="0" Style="{StaticResource Card}">
+                    <DockPanel>
+                        <TextBlock DockPanel.Dock="Top" Text="组合开关回路电流(A)" Foreground="{StaticResource SubText}" FontSize="11.5" Margin="0,0,0,2"/>
+                        <lvc:CartesianChart Series="{Binding LoopSeries}" XAxes="{Binding LoopXAxes}"/>
+                    </DockPanel>
+                </Border>
+
+                <!-- 第 2 列：采煤机电流趋势 / 支架群压力 -->
+                <Border x:Name="CellB0" Grid.Row="0" Grid.Column="1" Style="{StaticResource Card}" DataContext="{Binding Trends[1]}">
+                    <DockPanel>
+                        <ComboBox DockPanel.Dock="Top" ItemsSource="{Binding Points}" SelectedItem="{Binding Selected}" Margin="0,0,0,2">
+                            <ComboBox.ItemTemplate><DataTemplate><TextBlock FontSize="11"><Run Text="{Binding Device, Mode=OneWay}"/>·<Run Text="{Binding Name, Mode=OneWay}"/></TextBlock></DataTemplate></ComboBox.ItemTemplate>
+                        </ComboBox>
+                        <lvc:CartesianChart Series="{Binding Series}" XAxes="{Binding XAxes}" YAxes="{Binding YAxes}"/>
+                    </DockPanel>
+                </Border>
+                <Border x:Name="CellB1" Grid.Row="1" Grid.Column="1" Style="{StaticResource Card}">
+                    <DockPanel>
+                        <TextBlock DockPanel.Dock="Top" Text="支架群压力设定(MPa)" Foreground="{StaticResource SubText}" FontSize="11.5" Margin="0,0,0,2"/>
+                        <lvc:CartesianChart Series="{Binding SupportSeries}" XAxes="{Binding SupportXAxes}"/>
+                    </DockPanel>
+                </Border>
+
+                <!-- 第 3 列（最右，保留最久）：移变电压趋势 / 实时报警 -->
+                <Border x:Name="CellC0" Grid.Row="0" Grid.Column="2" Style="{StaticResource Card}" DataContext="{Binding Trends[2]}">
+                    <DockPanel>
+                        <ComboBox DockPanel.Dock="Top" ItemsSource="{Binding Points}" SelectedItem="{Binding Selected}" Margin="0,0,0,2">
+                            <ComboBox.ItemTemplate><DataTemplate><TextBlock FontSize="11"><Run Text="{Binding Device, Mode=OneWay}"/>·<Run Text="{Binding Name, Mode=OneWay}"/></TextBlock></DataTemplate></ComboBox.ItemTemplate>
+                        </ComboBox>
+                        <lvc:CartesianChart Series="{Binding Series}" XAxes="{Binding XAxes}" YAxes="{Binding YAxes}"/>
+                    </DockPanel>
+                </Border>
+                <Border x:Name="CellC1" Grid.Row="1" Grid.Column="2" Style="{StaticResource Card}">
+                    <DockPanel>
+                        <TextBlock DockPanel.Dock="Top" Text="实时报警" Style="{StaticResource H1}" Foreground="{StaticResource Alarm}" Margin="0,0,0,4"/>
+                        <DataGrid ItemsSource="{Binding Alarms}" FontSize="12">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="设备" Binding="{Binding Device}" Width="*"/>
+                                <DataGridTextColumn Header="报警点" Binding="{Binding Name}" Width="*"/>
+                                <DataGridTextColumn Header="状态" Binding="{Binding Value}" Width="50"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </DockPanel>
+                </Border>
+            </Grid>
         </Grid>
     </Grid>
 </UserControl>
