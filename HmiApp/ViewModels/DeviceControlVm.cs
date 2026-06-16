@@ -48,15 +48,16 @@ public partial class DeviceControlVm : ObservableObject
     public IReadOnlyList<DeviceActionVm> Actions { get; init; } = Array.Empty<DeviceActionVm>();
     public bool HasActions => Actions.Count > 0;
 
-    [RelayCommand] private void Start() => _root.CtrlCoil(Zone, StartCoil, true);
-    [RelayCommand] private void Stop() => _root.CtrlCoil(Zone, StartCoil, false);
+    [RelayCommand] private Task Start() => _root.CtrlCoil(Zone, StartCoil, true);
+    [RelayCommand] private Task Stop() => _root.CtrlCoil(Zone, StartCoil, false);
 
     [RelayCommand]
-    private void Send()
+    private Task Send()
     {
         ushort raw = (ushort)Math.Max(0, Math.Round(Setpoint / SpScale));
-        if (SpMulti) _root.CtrlMulti(Zone, SpAddr, Enumerable.Repeat(raw, (int)RegisterMap.SupportGroupCount).ToArray());
-        else _root.CtrlReg(Zone, SpAddr, raw);
+        return SpMulti
+            ? _root.CtrlMulti(Zone, SpAddr, Enumerable.Repeat(raw, (int)RegisterMap.SupportGroupCount).ToArray())
+            : _root.CtrlReg(Zone, SpAddr, raw);
     }
 }
 
@@ -65,5 +66,5 @@ public class DeviceActionVm
 {
     public string Label { get; }
     public IRelayCommand Command { get; }
-    public DeviceActionVm(string label, Action exec) { Label = label; Command = new RelayCommand(exec); }
+    public DeviceActionVm(string label, Func<Task> exec) { Label = label; Command = new AsyncRelayCommand(exec); }
 }

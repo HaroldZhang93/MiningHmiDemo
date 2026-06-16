@@ -12,6 +12,7 @@
 //    线圈4 %QX0.4 泵运行(PLC算,读)     线圈6 %QX0.6 低液位(PLC算,读)
 // ============================================================================
 
+using System.Windows;
 using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -23,7 +24,10 @@ public partial class PlcViewModel : ObservableObject
 {
     private const byte SlaveId = 1;
     private ModbusTcpMaster? _plc;
-    private readonly DispatcherTimer _poll = new() { Interval = TimeSpan.FromMilliseconds(500) };
+    // 后台轮询：与监控大屏同一套异步模式（PeriodicTimer + 后台 Task + Dispatcher 回填）。
+    private CancellationTokenSource? _plcCts;
+    private Task? _plcTask;
+    private readonly Dispatcher _dispatcher;
 
     // 与 OpenPLC 程序的 %QX/%QW 对应的地址
     private const ushort CoilStart = 0, CoilEstop = 2, CoilPump = 4, CoilLow = 6, HrLevel = 0;
@@ -46,65 +50,103 @@ public partial class PlcViewModel : ObservableObject
     public PlcViewModel(MainViewModel root)
     {
         _root = root;
-        _poll.Tick += OnPoll;
+        _dispatcher = Application.Current?.Dispatcher ?? Dispatcher.CurrentDispatcher;
     }
 
     [RelayCommand]
-    private void ConnectPlc()
+    private async Task ConnectPlc()
     {
-        if (_plc != null) { DisconnectPlc(); return; }
+        if (PlcConnected) { await DisconnectPlcAsync(); return; }
+        await DisconnectPlcAsync();   // 清理上次残留（读异常被动退出后的连接/任务）
         try
         {
-            _plc = new ModbusTcpMaster(PlcIp.Trim(), int.Parse(PlcPort.Trim()), SlaveId, "PLC");
+            _plc = await ModbusTcpMaster.ConnectAsync(PlcIp.Trim(), int.Parse(PlcPort.Trim()), SlaveId, "PLC");
             _plc.FrameLogged += _root.LogFrame;     // PLC 报文汇入右侧共享报文栏（带 [PLC] 前缀）
-            _poll.Start();
+            _plcCts = new CancellationTokenSource();
+            _plcTask = Task.Run(() => PlcLoopAsync(_plcCts.Token));
             PlcConnected = true;
             PlcConnectText = "断开 PLC";
             PlcStatus = "已连接";
         }
-        catch (Exception ex) { PlcStatus = "连接失败：" + ex.Message; DisconnectPlc(); }
+        catch (Exception ex) { PlcStatus = "连接失败：" + ex.Message; await DisconnectPlcAsync(); }
     }
 
-    private void DisconnectPlc()
+    private async Task DisconnectPlcAsync()
     {
-        _poll.Stop();
+        if (_plcCts != null)
+        {
+            _plcCts.Cancel();
+            if (_plcTask != null) { try { await _plcTask; } catch { /* 取消属正常 */ } }
+            _plcTask = null;
+            _plcCts.Dispose();
+            _plcCts = null;
+        }
         if (_plc != null) { _plc.FrameLogged -= _root.LogFrame; _plc.Dispose(); _plc = null; }
         PlcConnected = false;
         PlcConnectText = "连接 PLC";
         if (PlcStatus.StartsWith("已连接")) PlcStatus = "未连接";
     }
 
-    private void OnPoll(object? s, EventArgs e)
+    private async Task PlcLoopAsync(CancellationToken ct)
     {
-        if (_plc == null) return;
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(500));
         try
         {
-            bool[] c = _plc.ReadCoils(CoilStart, 7);   // 线圈 100..106
-            StartReq = c[CoilStart - CoilStart];        // 100
-            EStop = c[CoilEstop - CoilStart];           // 102
-            PumpRunning = c[CoilPump - CoilStart];      // 104
-            LowLevel = c[CoilLow - CoilStart];          // 106
-            PlcStatus = $"已连接 · {DateTime.Now:HH:mm:ss}";
+            while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
+            {
+                var plc = _plc;
+                if (plc == null) break;
+                try
+                {
+                    bool[] c = await plc.ReadCoilsAsync(CoilStart, 7, ct).ConfigureAwait(false);   // 线圈 0..6
+                    await _dispatcher.InvokeAsync(() =>
+                    {
+                        StartReq = c[CoilStart - CoilStart];   // 0
+                        EStop = c[CoilEstop - CoilStart];      // 2
+                        PumpRunning = c[CoilPump - CoilStart]; // 4
+                        LowLevel = c[CoilLow - CoilStart];     // 6
+                        PlcStatus = $"已连接 · {DateTime.Now:HH:mm:ss}";
+                        _root.DrainFrameQueue();   // PLC 独立运行时也负责把共享报文队列倒进报文栏
+                    });
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
+                catch (Exception ex)
+                {
+                    // 读异常：在 UI 线程置状态并就地释放连接（不 await 自身 Task，避免死锁），然后退出循环
+                    await _dispatcher.InvokeAsync(() =>
+                    {
+                        PlcStatus = "读取异常：" + ex.Message;
+                        if (_plc != null) { _plc.FrameLogged -= _root.LogFrame; _plc.Dispose(); _plc = null; }
+                        PlcConnected = false;
+                        PlcConnectText = "连接 PLC";
+                        _plcCts?.Cancel();
+                    });
+                    break;
+                }
+            }
         }
-        catch (Exception ex) { PlcStatus = "读取异常：" + ex.Message; DisconnectPlc(); }
+        catch (OperationCanceledException) { /* 断开/关闭，正常退出 */ }
     }
 
-    [RelayCommand] private void StartPump() => Do(() => _plc!.WriteSingleCoil(CoilStart, true), "下发启泵请求");
-    [RelayCommand] private void StopPump() => Do(() => _plc!.WriteSingleCoil(CoilStart, false), "撤销启泵请求");
-    [RelayCommand] private void TriggerEstop() => Do(() => _plc!.WriteSingleCoil(CoilEstop, true), "触发急停");
-    [RelayCommand] private void ClearEstop() => Do(() => _plc!.WriteSingleCoil(CoilEstop, false), "解除急停");
+    [RelayCommand] private Task StartPump() => Do(ct => _plc!.WriteSingleCoilAsync(CoilStart, true, ct), "下发启泵请求");
+    [RelayCommand] private Task StopPump() => Do(ct => _plc!.WriteSingleCoilAsync(CoilStart, false, ct), "撤销启泵请求");
+    [RelayCommand] private Task TriggerEstop() => Do(ct => _plc!.WriteSingleCoilAsync(CoilEstop, true, ct), "触发急停");
+    [RelayCommand] private Task ClearEstop() => Do(ct => _plc!.WriteSingleCoilAsync(CoilEstop, false, ct), "解除急停");
 
     [RelayCommand]
-    private void SetLevel()
+    private async Task SetLevel()
     {
         if (!ushort.TryParse(LevelValue.Trim(), out ushort v)) { PlcStatus = "液位值非法(0~100)"; return; }
-        Do(() => _plc!.WriteSingleRegister(HrLevel, v), $"写液位={v}%");
+        await Do(ct => _plc!.WriteSingleRegisterAsync(HrLevel, v, ct), $"写液位={v}%");
     }
 
-    private void Do(Action a, string label)
+    private async Task Do(Func<CancellationToken, Task> a, string label)
     {
         if (_plc == null) { PlcStatus = "未连接"; return; }
-        try { a(); PlcStatus = "已" + label; }
+        try { await a(CancellationToken.None); PlcStatus = "已" + label; }
         catch (Exception ex) { PlcStatus = label + "失败：" + ex.Message; }
     }
+
+    /// <summary>关闭时取消后台轮询（best-effort，不等待）。</summary>
+    public void Shutdown() => _plcCts?.Cancel();
 }

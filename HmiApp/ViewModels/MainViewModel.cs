@@ -5,7 +5,9 @@
 //  复用：Shared.ModbusTcpMaster(手写主站) + HmiApp.WriteScheduler。
 // ============================================================================
 
+using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
+using System.Windows;
 using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -21,9 +23,15 @@ public partial class MainViewModel : ObservableObject
 {
     // 每个分区一条连接（Category → 该区从站的 Modbus 主站连接）
     private readonly Dictionary<Category, ModbusTcpMaster> _zone = new();
-    private readonly DispatcherTimer _poll = new() { Interval = TimeSpan.FromMilliseconds(800) };
     private readonly List<PointVm> _all = new();
     private readonly List<PointVm> _supportPts;
+
+    // 后台采集：用 PeriodicTimer 在后台 Task 里跑，IO 不再占用 UI 线程。
+    private CancellationTokenSource? _pollCts;
+    private Task? _pollTask;
+    private readonly Dispatcher _dispatcher;   // 把后台读到的数据封送回 UI 线程更新绑定
+    // 报文在后台线程产生，先入并发队列，等 UI 线程那一拍统一 drain 进 Frames（避免集合跨线程改）。
+    private readonly ConcurrentQueue<FrameLog> _frameQ = new();
 
     [ObservableProperty] private string _ip = "127.0.0.1";
     [ObservableProperty] private bool _isConnected;
@@ -97,6 +105,8 @@ public partial class MainViewModel : ObservableObject
 
     public MainViewModel()
     {
+        // VM 由 XAML 在 UI 线程实例化，此处抓到的就是 UI Dispatcher。
+        _dispatcher = Application.Current?.Dispatcher ?? Dispatcher.CurrentDispatcher;
         Plc = new PlcViewModel(this);
         foreach (var p in RegisterMap.Points)
         {
@@ -137,21 +147,29 @@ public partial class MainViewModel : ObservableObject
             new TrendSlotVm(AnalogPoints, SubVoltage, "#F39C12"),
         };
 
-        _poll.Tick += OnPoll;
         BuildControls();
+    }
+
+    /// <summary>窗口关闭时调用：取消后台采集与调度，避免进程退出时后台 Task 泄漏/刷异常。</summary>
+    public void Shutdown()
+    {
+        _pollCts?.Cancel();
+        Scheduler.Shutdown();
+        Plc.Shutdown();
     }
 
     private PointVm? Find(string d, string n) => _all.FirstOrDefault(v => v.Device == d && v.Name == n);
 
     // ===================== 设备控制卡（按分区路由到对应从站）=====================
-    public void CtrlCoil(Category z, ushort a, bool on) => CtrlDo(z, m => m.WriteSingleCoil(a, on), $"线圈{a}={(on ? "ON" : "OFF")}");
-    public void CtrlReg(Category z, ushort a, ushort v) => CtrlDo(z, m => m.WriteSingleRegister(a, v), $"寄存器{a}={v}");
-    public void CtrlMulti(Category z, ushort a, ushort[] v) => CtrlDo(z, m => m.WriteMultipleRegisters(a, v), $"多寄存器@{a}×{v.Length}");
+    public Task CtrlCoil(Category z, ushort a, bool on) => CtrlDo(z, (m, ct) => m.WriteSingleCoilAsync(a, on, ct), $"线圈{a}={(on ? "ON" : "OFF")}");
+    public Task CtrlReg(Category z, ushort a, ushort v) => CtrlDo(z, (m, ct) => m.WriteSingleRegisterAsync(a, v, ct), $"寄存器{a}={v}");
+    public Task CtrlMulti(Category z, ushort a, ushort[] v) => CtrlDo(z, (m, ct) => m.WriteMultipleRegistersAsync(a, v, ct), $"多寄存器@{a}×{v.Length}");
 
-    private void CtrlDo(Category z, Action<ModbusTcpMaster> act, string label)
+    private async Task CtrlDo(Category z, Func<ModbusTcpMaster, CancellationToken, Task> act, string label)
     {
         if (!_zone.TryGetValue(z, out var m)) { CtrlHint = $"未连接「{RegisterMap.CategoryName(z)}」区"; return; }
-        try { act(m); CtrlHint = "已下发：" + label; }
+        // 写与后台轮询读共用同一连接，经 master 内部 SemaphoreSlim 自动串行；await 期间不阻塞 UI。
+        try { await act(m, CancellationToken.None); CtrlHint = "已下发：" + label; }
         catch (Exception ex) { CtrlHint = "下发失败：" + ex.Message; }
     }
 
@@ -209,15 +227,17 @@ public partial class MainViewModel : ObservableObject
 
     // ===================== 连接（一键连全部分区）=====================
     [RelayCommand]
-    private void Connect()
+    private async Task Connect()
     {
-        if (_zone.Count > 0) { Disconnect(); return; }
+        if (IsConnected) { await DisconnectAsync(); return; }
+        await DisconnectAsync();   // 清理上次残留（如全掉线后被动取消的后台任务/连接）
+
         var fails = new List<string>();
         foreach (Category cat in Enum.GetValues<Category>())
         {
             try
             {
-                var m = new ModbusTcpMaster(Ip.Trim(), RegisterMap.PortOf(cat), RegisterMap.SlaveId, RegisterMap.CategoryName(cat));
+                var m = await ModbusTcpMaster.ConnectAsync(Ip.Trim(), RegisterMap.PortOf(cat), RegisterMap.SlaveId, RegisterMap.CategoryName(cat));
                 m.FrameLogged += LogFrame;
                 _zone[cat] = m;
             }
@@ -226,13 +246,24 @@ public partial class MainViewModel : ObservableObject
         if (_zone.Count == 0) { StatusText = "全部分区连接失败（确认 SlaveSim 已启动）"; return; }
         IsConnected = true;
         ConnectText = "断开";
-        _poll.Start();
+        // 启动后台采集循环：网络 IO 全部在后台 Task 上跑，UI 线程只负责回填。
+        _pollCts = new CancellationTokenSource();
+        _pollTask = Task.Run(() => PollLoopAsync(_pollCts.Token));
         StatusText = $"已连接 {_zone.Count}/4 区" + (fails.Count > 0 ? "（失败:" + string.Join(",", fails) + "）" : "");
     }
 
-    private void Disconnect()
+    // 优雅停止：先 Cancel + 等后台 Task 真正结束，再 Dispose 连接——否则后台正在 ReadAsync 时
+    // 把 master 释放掉会触发 ObjectDisposedException 竞态。
+    private async Task DisconnectAsync()
     {
-        _poll.Stop();
+        if (_pollCts != null)
+        {
+            _pollCts.Cancel();
+            if (_pollTask != null) { try { await _pollTask; } catch { /* 取消属正常 */ } }
+            _pollTask = null;
+            _pollCts.Dispose();
+            _pollCts = null;
+        }
         foreach (var m in _zone.Values) { m.FrameLogged -= LogFrame; m.Dispose(); }
         _zone.Clear();
         IsConnected = false;
@@ -240,40 +271,58 @@ public partial class MainViewModel : ObservableObject
         if (StatusText.StartsWith("已连接")) StatusText = "未连接";
     }
 
-    // ===================== 轮询（逐区）=====================
-    private void OnPoll(object? s, EventArgs e)
+    // ===================== 后台采集循环 =====================
+    private async Task PollLoopAsync(CancellationToken ct)
     {
-        if (_zone.Count == 0) return;
-        foreach (var (cat, m) in _zone.ToList())
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(800));
+        try
         {
-            try { PollZone(cat, m); }
-            catch (Exception ex)
+            while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
             {
-                m.FrameLogged -= LogFrame; m.Dispose(); _zone.Remove(cat);
-                StatusText = $"「{RegisterMap.CategoryName(cat)}」区掉线：{ex.Message}";
+                // 1) 后台线程：只做网络 IO，把原始寄存器值收进纯数据快照（不碰任何 VM / 绑定集合）
+                PollSnapshot snap = await ReadAllZonesAsync(ct).ConfigureAwait(false);
+                // 2) UI 线程：一次性把快照批量回填到 VM（SetReg/SetBit、趋势、报警、报文）
+                await _dispatcher.InvokeAsync(() => ApplySnapshot(snap));
             }
         }
-        SyncAlarms();
-        RunningCount = _all.Count(v => v.IsOn && v.Name.Contains("运行"));
-        AlarmCount = Alarms.Count;
-        foreach (var t in Trends) t.Push();
-        for (int i = 0; i < 4; i++) _loopCurrents[i] = Find("组合开关", $"回路{i + 1}电流")?.Numeric ?? 0;
-        for (int i = 0; i < _supportPts.Count; i++) _supportPressures[i] = _supportPts[i].Numeric;
-
-        if (_zone.Count == 0) { _poll.Stop(); IsConnected = false; ConnectText = "连接全部分区"; }
-        else if (!StatusText.Contains("掉线")) StatusText = $"已连接 {_zone.Count}/4 区 · {DateTime.Now:HH:mm:ss}";
+        catch (OperationCanceledException) { /* 断开/关闭，正常退出 */ }
     }
 
-    private void PollZone(Category cat, ModbusTcpMaster m)
+    // 4 区各自独立连接、独立信号量，可并行读：整轮耗时≈最慢一区，而非四区之和。
+    private async Task<PollSnapshot> ReadAllZonesAsync(CancellationToken ct)
     {
-        UpdateRegs(cat, Area.InputRegister, (a, c) => m.ReadInputRegisters(a, c));
-        UpdateRegs(cat, Area.HoldingRegister, (a, c) => m.ReadHoldingRegisters(a, c));
-        UpdateBits(cat, Area.DiscreteInput, (a, c) => m.ReadDiscreteInputs(a, c));
-        UpdateBits(cat, Area.Coil, (a, c) => m.ReadCoils(a, c));
+        var masters = _zone.ToArray();   // 期间 _zone 只在 UI 线程(ApplySnapshot)改，且与本读被 await 串行，安全
+        var tasks = masters.Select(kv => ReadZoneAsync(kv.Key, kv.Value, ct)).ToArray();
+        var zoneSnaps = await Task.WhenAll(tasks).ConfigureAwait(false);
+        return new PollSnapshot(zoneSnaps);
     }
 
-    // 按"分区 + 数据区"批量读；保持寄存器跨度大(三机区到207)，按 120 一段分块读
-    private void UpdateRegs(Category cat, Area area, Func<ushort, ushort, ushort[]> read)
+    private async Task<ZoneSnapshot> ReadZoneAsync(Category cat, ModbusTcpMaster m, CancellationToken ct)
+    {
+        var regBlocks = new List<RegBlock>();
+        var bitBlocks = new List<BitBlock>();
+        try
+        {
+            await CollectRegsAsync(cat, Area.InputRegister, m.ReadInputRegistersAsync, regBlocks, ct).ConfigureAwait(false);
+            await CollectRegsAsync(cat, Area.HoldingRegister, m.ReadHoldingRegistersAsync, regBlocks, ct).ConfigureAwait(false);
+            await CollectBitsAsync(cat, Area.DiscreteInput, m.ReadDiscreteInputsAsync, bitBlocks, ct).ConfigureAwait(false);
+            await CollectBitsAsync(cat, Area.Coil, m.ReadCoilsAsync, bitBlocks, ct).ConfigureAwait(false);
+            return new ZoneSnapshot(cat, true, null, regBlocks, bitBlocks);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;   // 全局取消(断开/关闭)：向上抛，由 PollLoop 统一吞掉退出
+        }
+        catch (Exception ex)
+        {
+            // 单区失败(含事务超时的 OCE、IO 异常)：标记该区掉线，不影响其余区，循环继续
+            string err = ex is OperationCanceledException ? "读取超时" : ex.Message;
+            return new ZoneSnapshot(cat, false, err, regBlocks, bitBlocks);
+        }
+    }
+
+    // 按"分区 + 数据区"批量读；保持寄存器跨度大(三机区到207)，按 120 一段分块读 → 收进快照块（不赋值 VM）
+    private async Task CollectRegsAsync(Category cat, Area area, Func<ushort, ushort, CancellationToken, Task<ushort[]>> read, List<RegBlock> outBlocks, CancellationToken ct)
     {
         var pts = _all.Where(v => v.Point.Category == cat && v.Point.Area == area).ToList();
         if (pts.Count == 0) return;
@@ -281,19 +330,57 @@ public partial class MainViewModel : ObservableObject
         for (int start = min; start <= max; start += 120)
         {
             ushort cnt = (ushort)Math.Min(120, max - start + 1);
-            ushort[] data = read((ushort)start, cnt);
-            foreach (var v in pts.Where(v => v.Point.Address >= start && v.Point.Address < start + cnt))
-                v.SetReg(data[v.Point.Address - start]);
+            ushort[] data = await read((ushort)start, cnt, ct).ConfigureAwait(false);
+            outBlocks.Add(new RegBlock(cat, area, (ushort)start, data));
         }
     }
 
-    private void UpdateBits(Category cat, Area area, Func<ushort, ushort, bool[]> read)
+    private async Task CollectBitsAsync(Category cat, Area area, Func<ushort, ushort, CancellationToken, Task<bool[]>> read, List<BitBlock> outBlocks, CancellationToken ct)
     {
         var pts = _all.Where(v => v.Point.Category == cat && v.Point.Area == area).ToList();
         if (pts.Count == 0) return;
         ushort min = pts.Min(v => v.Point.Address), max = pts.Max(v => v.Point.Address);
-        bool[] data = read(min, (ushort)(max - min + 1));
-        foreach (var v in pts) v.SetBit(data[v.Point.Address - min]);
+        bool[] data = await read(min, (ushort)(max - min + 1), ct).ConfigureAwait(false);
+        outBlocks.Add(new BitBlock(cat, area, min, data));
+    }
+
+    // ===================== UI 线程：批量回填快照（原 OnPoll 后半段）=====================
+    private void ApplySnapshot(PollSnapshot snap)
+    {
+        foreach (var z in snap.Zones)
+        {
+            if (!z.Ok) { HandleZoneDropped(z.Cat, z.Error ?? "未知错误"); continue; }
+            foreach (var rb in z.RegBlocks)
+                foreach (var v in _all.Where(v => v.Point.Category == rb.Cat && v.Point.Area == rb.Area
+                           && v.Point.Address >= rb.Start && v.Point.Address < rb.Start + rb.Regs.Length))
+                    v.SetReg(rb.Regs[v.Point.Address - rb.Start]);
+            foreach (var bb in z.BitBlocks)
+                foreach (var v in _all.Where(v => v.Point.Category == bb.Cat && v.Point.Area == bb.Area))
+                    v.SetBit(bb.Bits[v.Point.Address - bb.Start]);
+        }
+
+        DrainFrameQueue();
+        SyncAlarms();
+        RunningCount = _all.Count(v => v.IsOn && v.Name.Contains("运行"));
+        AlarmCount = Alarms.Count;
+        // 趋势/柱状读的是 PointVm.Numeric，必须在上面 SetReg/SetBit 之后执行
+        foreach (var t in Trends) t.Push();
+        for (int i = 0; i < 4; i++) _loopCurrents[i] = Find("组合开关", $"回路{i + 1}电流")?.Numeric ?? 0;
+        for (int i = 0; i < _supportPts.Count; i++) _supportPressures[i] = _supportPts[i].Numeric;
+
+        if (_zone.Count == 0)
+        {
+            IsConnected = false; ConnectText = "连接全部分区";
+            _pollCts?.Cancel();   // 全部掉线：请求后台循环退出（残留字段在下次 Connect 的 DisconnectAsync 清理）
+        }
+        else if (!StatusText.Contains("掉线")) StatusText = $"已连接 {_zone.Count}/4 区 · {DateTime.Now:HH:mm:ss}";
+    }
+
+    // 单区掉线：在 UI 线程摘掉该区连接（与下一拍后台读之间被 await 串行，安全）
+    private void HandleZoneDropped(Category cat, string err)
+    {
+        if (_zone.TryGetValue(cat, out var m)) { m.FrameLogged -= LogFrame; m.Dispose(); _zone.Remove(cat); }
+        StatusText = $"「{RegisterMap.CategoryName(cat)}」区掉线：{err}";
     }
 
     private void SyncAlarms()
@@ -304,11 +391,18 @@ public partial class MainViewModel : ObservableObject
     }
 
     // ===================== 报文 =====================
-    public void LogFrame(FrameLog f)
+    // 后台线程(采集/PLC/写)产生报文 → 只入并发队列（线程安全、不碰绑定集合）。
+    public void LogFrame(FrameLog f) => _frameQ.Enqueue(f);
+
+    // UI 线程统一把队列里的报文倒进 Frames（由 ApplySnapshot 和 PLC 轮询那一拍调用）。
+    public void DrainFrameQueue()
     {
-        if (FramePaused) return;
-        if (!f.IsWrite && !LogPolling) return;
-        Frames.Insert(0, f);
+        while (_frameQ.TryDequeue(out var f))
+        {
+            if (FramePaused) continue;
+            if (!f.IsWrite && !LogPolling) continue;
+            Frames.Insert(0, f);
+        }
         while (Frames.Count > FrameCap) Frames.RemoveAt(Frames.Count - 1);
     }
 
@@ -316,11 +410,11 @@ public partial class MainViewModel : ObservableObject
 
     // ===================== 写入 / 调度 =====================
     [RelayCommand]
-    private void WriteOnce()
+    private async Task WriteOnce()
     {
         var b = BuildWrite();
         if (b == null) return;
-        try { b.Value.action(); WriteHint = "已写入：" + b.Value.desc; }
+        try { await b.Value.action(CancellationToken.None); WriteHint = "已写入：" + b.Value.desc; }
         catch (Exception ex) { WriteHint = "写入失败：" + ex.Message; }
     }
 
@@ -338,16 +432,17 @@ public partial class MainViewModel : ObservableObject
 
     // 一键演示多寄存器写(FC16)：把支架群 1#~8# 压力设定一次写完（三机区）
     [RelayCommand]
-    private void WriteSupportGroup()
+    private async Task WriteSupportGroup()
     {
         if (!_zone.TryGetValue(Category.ThreeMachine, out var m)) { WriteHint = "未连接三机区"; return; }
         ushort val = ushort.TryParse(WriteValue.Trim(), out var v) ? v : (ushort)320;
         var vals = Enumerable.Repeat(val, RegisterMap.SupportGroupCount).ToArray();
-        try { m.WriteMultipleRegisters(RegisterMap.SupportGroupStart, vals); WriteHint = $"FC16 群写支架群压力设定 ×{vals.Length} = {val}"; }
+        try { await m.WriteMultipleRegistersAsync(RegisterMap.SupportGroupStart, vals); WriteHint = $"FC16 群写支架群压力设定 ×{vals.Length} = {val}"; }
         catch (Exception ex) { WriteHint = "群写失败：" + ex.Message; }
     }
 
-    private (string desc, Action action)? BuildWrite()
+    // 委托产物改为 Func<CancellationToken,Task>：单次写(WriteOnce)与周期写(Scheduler)统一异步执行。
+    private (string desc, Func<CancellationToken, Task> action)? BuildWrite()
     {
         if (WriteTarget is null) { WriteHint = "未选点位"; return null; }
         var p = WriteTarget.Point;
@@ -358,18 +453,18 @@ public partial class MainViewModel : ObservableObject
         if (p.Area == Area.Coil)
         {
             bool on = valText is "1" or "true" or "ON" or "on";
-            return ($"写线圈 @{addr} = {(on ? "ON" : "OFF")}", () => m.WriteSingleCoil(addr, on));
+            return ($"写线圈 @{addr} = {(on ? "ON" : "OFF")}", ct => m.WriteSingleCoilAsync(addr, on, ct));
         }
 
         if (!string.IsNullOrEmpty(bitText))   // 按位写：read-modify-write
         {
             if (!int.TryParse(bitText, out int bit) || bit < 0 || bit > 15) { WriteHint = "位应为 0~15"; return null; }
             bool set = valText is "1" or "true";
-            return ($"按位写 @{addr}.bit{bit} = {(set ? 1 : 0)}", () =>
+            return ($"按位写 @{addr}.bit{bit} = {(set ? 1 : 0)}", async ct =>
             {
-                ushort cur = m.ReadHoldingRegisters(addr, 1)[0];
+                ushort cur = (await m.ReadHoldingRegistersAsync(addr, 1, ct).ConfigureAwait(false))[0];
                 ushort nw = set ? (ushort)(cur | (1 << bit)) : (ushort)(cur & ~(1 << bit));
-                m.WriteSingleRegister(addr, nw);
+                await m.WriteSingleRegisterAsync(addr, nw, ct).ConfigureAwait(false);
             });
         }
 
@@ -379,12 +474,19 @@ public partial class MainViewModel : ObservableObject
             var vals = new ushort[parts.Length];
             for (int i = 0; i < parts.Length; i++)
                 if (!ushort.TryParse(parts[i], out vals[i])) { WriteHint = "多值非法"; return null; }
-            return ($"写多寄存器 @{addr} ×{vals.Length}", () => m.WriteMultipleRegisters(addr, vals));
+            return ($"写多寄存器 @{addr} ×{vals.Length}", ct => m.WriteMultipleRegistersAsync(addr, vals, ct));
         }
 
         if (!ushort.TryParse(valText, out ushort vv)) { WriteHint = "值应为 0~65535 整数"; return null; }
-        return ($"写寄存器 @{addr} = {vv}", () => m.WriteSingleRegister(addr, vv));
+        return ($"写寄存器 @{addr} = {vv}", ct => m.WriteSingleRegisterAsync(addr, vv, ct));
     }
 
     private static int ParseInt(string s, int dft) => int.TryParse(s.Trim(), out int v) ? v : dft;
 }
+
+// ===================== 采集快照（纯数据，后台线程只填它，不碰 VM）=====================
+// 后台读到的原始寄存器/位数据先收进这些 record，再由 UI 线程的 ApplySnapshot 统一回填。
+internal sealed record RegBlock(Category Cat, Area Area, ushort Start, ushort[] Regs);
+internal sealed record BitBlock(Category Cat, Area Area, ushort Start, bool[] Bits);
+internal sealed record ZoneSnapshot(Category Cat, bool Ok, string? Error, List<RegBlock> RegBlocks, List<BitBlock> BitBlocks);
+internal sealed record PollSnapshot(ZoneSnapshot[] Zones);

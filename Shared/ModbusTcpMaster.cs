@@ -38,72 +38,110 @@ public class ModbusTcpMaster : IDisposable
     private readonly NetworkStream _stream;
     private readonly byte _unitId;
     private readonly string _tag;   // 来源标签（如 "PLC"），加在报文摘要前以区分不同连接
-    private readonly object _lock = new();
+    // 串行化用 SemaphoreSlim 而非 lock：lock(Monitor) 进出必须同线程，不能跨 await；
+    // 改异步后一次事务的"发-收"全程 await，只有异步信号量能在 await 间安全持有。
+    private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly TimeSpan _opTimeout;   // 单次事务(发+收)超时
     private ushort _tid;   // 事务ID，每次请求自增（响应里会原样带回，可用于匹配）
 
-    /// <summary>每收发一帧就触发一次，界面订阅它来显示报文。</summary>
+    /// <summary>每收发一帧就触发一次，界面订阅它来显示报文。
+    /// 注意：异步化后本事件在后台线程触发，订阅方须自行做线程封送（见 MainViewModel.LogFrame）。</summary>
     public event Action<FrameLog>? FrameLogged;
 
-    public ModbusTcpMaster(string ip, int port, byte unitId, string tag = "")
+    // 私有构造：只接收已连接好的 socket；对外一律走 ConnectAsync（连接也异步、带超时）。
+    private ModbusTcpMaster(TcpClient tcp, byte unitId, string tag, TimeSpan opTimeout)
     {
+        _tcp = tcp;
+        _stream = tcp.GetStream();
         _unitId = unitId;
         _tag = tag;
-        _tcp = new TcpClient();
-        _tcp.Connect(ip, port);
-        _stream = _tcp.GetStream();
+        _opTimeout = opTimeout;
     }
 
-    // ---- 读 ----
-    public ushort[] ReadInputRegisters(ushort start, ushort qty)   => ReadRegisters(0x04, start, qty);
-    public ushort[] ReadHoldingRegisters(ushort start, ushort qty) => ReadRegisters(0x03, start, qty);
-    public bool[]   ReadDiscreteInputs(ushort start, ushort qty)   => ReadBits(0x02, start, qty);
-    public bool[]   ReadCoils(ushort start, ushort qty)            => ReadBits(0x01, start, qty);
+    /// <summary>异步建立连接，带连接超时（默认 3s）与事务超时（默认 2s）。</summary>
+    public static async Task<ModbusTcpMaster> ConnectAsync(
+        string ip, int port, byte unitId, string tag = "",
+        TimeSpan? connectTimeout = null, TimeSpan? opTimeout = null,
+        CancellationToken ct = default)
+    {
+        var ctimeout = connectTimeout ?? TimeSpan.FromSeconds(3);
+        var tcp = new TcpClient();
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(ctimeout);
+        try
+        {
+            await tcp.ConnectAsync(ip, port, cts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            tcp.Dispose();
+            throw new TimeoutException($"连接 {ip}:{port} 超时（>{ctimeout.TotalMilliseconds:F0}ms）");
+        }
+        catch
+        {
+            tcp.Dispose();
+            throw;
+        }
+        return new ModbusTcpMaster(tcp, unitId, tag, opTimeout ?? TimeSpan.FromSeconds(2));
+    }
 
-    private ushort[] ReadRegisters(byte fc, ushort start, ushort qty)
+    // ---- 读（异步）----
+    public Task<ushort[]> ReadInputRegistersAsync(ushort start, ushort qty, CancellationToken ct = default)   => ReadRegistersAsync(0x04, start, qty, ct);
+    public Task<ushort[]> ReadHoldingRegistersAsync(ushort start, ushort qty, CancellationToken ct = default) => ReadRegistersAsync(0x03, start, qty, ct);
+    public Task<bool[]>   ReadDiscreteInputsAsync(ushort start, ushort qty, CancellationToken ct = default)   => ReadBitsAsync(0x02, start, qty, ct);
+    public Task<bool[]>   ReadCoilsAsync(ushort start, ushort qty, CancellationToken ct = default)            => ReadBitsAsync(0x01, start, qty, ct);
+
+    private async Task<ushort[]> ReadRegistersAsync(byte fc, ushort start, ushort qty, CancellationToken ct)
     {
         byte[] pdu = { fc, Hi(start), Lo(start), Hi(qty), Lo(qty) };
-        byte[] rpdu = Transact(pdu);                 // 响应 PDU = 功能码 + 字节数 + 数据
+        byte[] rpdu = await TransactAsync(pdu, false, ct).ConfigureAwait(false);   // 响应 PDU = 功能码 + 字节数 + 数据
         var result = new ushort[qty];
         for (int i = 0; i < qty; i++)
             result[i] = (ushort)((rpdu[2 + i * 2] << 8) | rpdu[2 + i * 2 + 1]);   // 寄存器是大端
         return result;
     }
 
-    private bool[] ReadBits(byte fc, ushort start, ushort qty)
+    private async Task<bool[]> ReadBitsAsync(byte fc, ushort start, ushort qty, CancellationToken ct)
     {
         byte[] pdu = { fc, Hi(start), Lo(start), Hi(qty), Lo(qty) };
-        byte[] rpdu = Transact(pdu);                 // 响应 PDU = 功能码 + 字节数 + 位打包数据
+        byte[] rpdu = await TransactAsync(pdu, false, ct).ConfigureAwait(false);   // 响应 PDU = 功能码 + 字节数 + 位打包数据
         var result = new bool[qty];
         for (int i = 0; i < qty; i++)
             result[i] = (rpdu[2 + i / 8] & (1 << (i % 8))) != 0;   // 每字节低位在前
         return result;
     }
 
-    // ---- 写 ----
-    public void WriteSingleCoil(ushort addr, bool on)
+    // ---- 写（异步）----
+    public Task WriteSingleCoilAsync(ushort addr, bool on, CancellationToken ct = default)
     {
         byte[] pdu = { 0x05, Hi(addr), Lo(addr), (byte)(on ? 0xFF : 0x00), 0x00 };  // ON=0xFF00 OFF=0x0000
-        Transact(pdu, isWriteHint: true);
+        return TransactAsync(pdu, true, ct);
     }
 
-    public void WriteSingleRegister(ushort addr, ushort val)
+    public Task WriteSingleRegisterAsync(ushort addr, ushort val, CancellationToken ct = default)
     {
         byte[] pdu = { 0x06, Hi(addr), Lo(addr), Hi(val), Lo(val) };
-        Transact(pdu, isWriteHint: true);
+        return TransactAsync(pdu, true, ct);
     }
 
-    public void WriteMultipleRegisters(ushort start, ushort[] vals)
+    public Task WriteMultipleRegistersAsync(ushort start, ushort[] vals, CancellationToken ct = default)
     {
         int n = vals.Length;
         var pdu = new List<byte> { 0x10, Hi(start), Lo(start), Hi((ushort)n), Lo((ushort)n), (byte)(n * 2) };
         foreach (var v in vals) { pdu.Add(Hi(v)); pdu.Add(Lo(v)); }
-        Transact(pdu.ToArray(), isWriteHint: true);
+        return TransactAsync(pdu.ToArray(), true, ct);
     }
 
-    // ---- 核心：拼 ADU、发送、接收、解析、记录报文 ----
-    private byte[] Transact(byte[] pdu, bool isWriteHint = false)
+    // ---- 核心：拼 ADU、发送、接收、解析、记录报文（全异步）----
+    private async Task<byte[]> TransactAsync(byte[] pdu, bool isWriteHint, CancellationToken ct)
     {
-        lock (_lock)   // 串行化：一个请求一个响应，避免事务交错
+        // 把外部取消(断开/关闭)与本次事务超时合并成一个 token：任一触发都会让 await 退出。
+        using var opCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        opCts.CancelAfter(_opTimeout);
+        var tk = opCts.Token;
+
+        await _gate.WaitAsync(tk).ConfigureAwait(false);   // 串行化：一个请求一个响应，避免事务交错
+        try
         {
             ushort tid = ++_tid;
             int len = 1 + pdu.Length;                 // 长度字段 = 单元ID + PDU
@@ -115,12 +153,12 @@ public class ModbusTcpMaster : IDisposable
             Array.Copy(pdu, 0, adu, 7, pdu.Length);
 
             Emit(FrameDir.Tx, adu, isWriteHint);
-            _stream.Write(adu, 0, adu.Length);
+            await _stream.WriteAsync(adu.AsMemory(0, adu.Length), tk).ConfigureAwait(false);
 
             // 收响应：先读 6 字节(事务ID+协议ID+长度)，据"长度"再读剩余
-            byte[] head = ReadExactly(6);
+            byte[] head = await ReadExactlyAsync(6, tk).ConfigureAwait(false);
             int rlen = (head[4] << 8) | head[5];
-            byte[] rest = ReadExactly(rlen);          // 单元ID + 响应PDU
+            byte[] rest = await ReadExactlyAsync(rlen, tk).ConfigureAwait(false);   // 单元ID + 响应PDU
             var radu = new byte[6 + rlen];
             Array.Copy(head, 0, radu, 0, 6);
             Array.Copy(rest, 0, radu, 6, rlen);
@@ -138,18 +176,18 @@ public class ModbusTcpMaster : IDisposable
             Array.Copy(radu, 7, rpdu, 0, rlen - 1);
             return rpdu;
         }
+        finally
+        {
+            _gate.Release();   // 异常路径也必须释放，否则该连接的信号量永久占用 → 死锁
+        }
     }
 
-    private byte[] ReadExactly(int n)
+    // .NET 7+ 自带 Stream.ReadExactlyAsync：读不满自动循环、流结束抛 EndOfStreamException，
+    // 语义等价于原来手写的 ReadExactly 循环，省去自己拼。
+    private async Task<byte[]> ReadExactlyAsync(int n, CancellationToken ct)
     {
         var buf = new byte[n];
-        int off = 0;
-        while (off < n)
-        {
-            int r = _stream.Read(buf, off, n - off);
-            if (r <= 0) throw new IOException("连接已关闭");
-            off += r;
-        }
+        await _stream.ReadExactlyAsync(buf.AsMemory(0, n), ct).ConfigureAwait(false);
         return buf;
     }
 
